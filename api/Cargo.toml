@@ -1,0 +1,21 @@
+[package]
+name = "analytics"
+version = "1.0.0"
+authors = [ "Aloun Vangkeosay https://github.com/Alounv" ]
+edition = "2021"
+
+[dependencies]
+mongodb = "2.1"
+tokio = "1"
+chrono = "0.4"
+http = "0.1"
+vercel_lambda = "*"
+serde_json = "1.0"
+
+  [dependencies.bson]
+  version = "2"
+  features = [ "chrono-0_4" ]
+
+[[bin]]
+name = "analytics"
+path = "/Users/alounvangkeosay/Dev/odc-analytics-api/api/analytics.rs"
