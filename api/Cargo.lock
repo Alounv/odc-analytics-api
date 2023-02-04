@@ -38,6 +38,7 @@ dependencies = [
  "mongodb",
  "serde_json",
  "tokio 1.25.0",
+ "url",
  "vercel_lambda",
 ]
 

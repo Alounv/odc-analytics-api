@@ -1,21 +1,39 @@
+use bson::{doc, Bson, Document};
 use http::StatusCode;
 use mongodb::{
     options::{ClientOptions, ResolverConfig},
     Client,
 };
+use std::collections::HashMap;
 use std::env;
 use std::error::Error;
+use url::Url;
 use vercel_lambda::{error::VercelError, lambda, IntoResponse, Request, Response};
 
-#[tokio::main]
-pub async fn list_db() -> Result<Vec<String>, mongodb::error::Error> {
-    let uri = env::var("MONGODB_URI").expect("MONGODB_URI must be set");
-    let options = ClientOptions::parse_with_resolver_config(&uri, ResolverConfig::cloudflare())
-        .await
-        .expect("Failed to parse options");
-    let client = Client::with_options(options).expect("Failed to initialize client");
+fn parse_url(req: &Request) -> Result<(String, String), Box<dyn Error>> {
+    let parsed_url = Url::parse(&req.uri().to_string()).unwrap();
+    let hash_query: HashMap<_, _> = parsed_url.query_pairs().into_owned().collect();
+    if hash_query.contains_key("db") && hash_query.contains_key("publication") {
+        let db_name = hash_query.get("db").unwrap().to_string();
+        let publication_id = hash_query.get("publication").unwrap().to_string();
+        Ok((db_name, publication_id))
+    } else {
+        Err("Missing db or publication parameters".into())
+    }
+}
 
-    return client.list_database_names(None, None).await;
+#[tokio::main]
+async fn list_db(db_name: &str, _publication_id: &str) -> Result<Vec<Bson>, mongodb::error::Error> {
+    let uri = env::var("MONGODB_URI").expect("MONGODB_URI must be set");
+    let options =
+        ClientOptions::parse_with_resolver_config(&uri, ResolverConfig::cloudflare()).await?;
+    let client = Client::with_options(options)?;
+    println!("Connected to MongoDB!");
+
+    let db = client.database(db_name);
+    let users = db.collection::<Document>("user");
+
+    return users.distinct("_cls", doc! {}, None).await;
 
     // TODO pass db name + course id as parameter
     // TODO print duration of each operation
@@ -44,8 +62,18 @@ pub async fn list_db() -> Result<Vec<String>, mongodb::error::Error> {
      */
 }
 
-fn handler(_req: Request) -> Result<impl IntoResponse, VercelError> {
-    match list_db() {
+fn get_results(req: Request) -> Result<Vec<Bson>, Box<dyn Error>> {
+    let (db_name, publication_id) = parse_url(&req)?;
+    match list_db(&db_name, &publication_id) {
+        Ok(results) => Ok(results),
+        Err(e) => Err(e.into()),
+    }
+}
+
+fn handler(req: Request) -> Result<impl IntoResponse, VercelError> {
+    let result = get_results(req);
+
+    match result {
         Ok(list) => {
             let data = serde_json::json!(list);
             let response = Response::builder()
