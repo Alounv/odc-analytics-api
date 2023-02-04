@@ -16,6 +16,32 @@ pub async fn list_db() -> Result<Vec<String>, mongodb::error::Error> {
     let client = Client::with_options(options).expect("Failed to initialize client");
 
     return client.list_database_names(None, None).await;
+
+    // TODO pass db name + course id as parameter
+    // TODO print duration of each operation
+
+    /*
+     * The array at the beginning of the line indicates what is required before the calculation (u
+     * is for user and c for course)
+     *
+     * BATCH A
+     * 1. [u?] GET the usersGroupsNames PER USER  ---> 'learners_group' collection
+     * 2. [c] GET the publication for one database (name in the query) ---> 'course' collection
+     *
+     * BATCH B
+     * 3. [2] -> calculate the activeModulesIds
+     * 4. [2, u?] -> GET the usersSessionSprints for the course PER USER ---> 'course_module_sprint' collection
+     * (This should include the completion date at the end of the aggregate).
+     *
+     * BATCH C
+     * 5. [4] -> group granuleSprints PER USE (1st level) and PER MODULE (2nd level)
+     * 6. [5] -> GET usersModulesDurations PER USER (1st level) and PER MODULE (2nd level) ---> 'granule_sprint' collection
+     *
+     * BATCH D
+     * 8. [3,4,5] -> loop through each usersSessionsSprints
+     *    8.1. Format course data
+     *    8.2. Format module specific data
+     */
 }
 
 fn handler(_req: Request) -> Result<impl IntoResponse, VercelError> {

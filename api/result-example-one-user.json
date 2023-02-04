@@ -1,0 +1,103 @@
+{
+  "dateStarted": "2021-11-15T14:09:01.401Z",
+  "lastActivity": "2021-11-15T15:06:07.133Z",
+  "granuleSprints": [
+    {
+      "courseModuleId": "60f19ade70889a488b569f20",
+      "sprintIds": [
+        "6192713539398a00000f4578",
+        "6192710d39398a00000f4577",
+        "6192741939398a00000f457b",
+        "619271d339398a00000f4579",
+        "619272c439398a00000f457a",
+        "61926c8c39398a00000f4575"
+      ]
+    }
+  ],
+  "completedModulesIds": [
+    "60f19ade70889a488b569f20"
+  ],
+  "startedModulesIds": [
+    "60f19ade70889a488b569f20"
+  ],
+  "user": {
+    "_id": "userId",
+    "roles": [],
+    "private": true,
+    "oidcSubject": "oidcSubject",
+    "oidcIssuer": "oidcIssuer",
+    "email": "email",
+    "date_created": "2021-11-15T14:08:47.225Z",
+    "date_updated": "2021-11-15T14:08:47.225Z",
+    "__v": 0,
+    "lastSeen": "2021-11-15T14:19:50.837Z"
+  },
+  "completedModulesCount": 1,
+  "activeModulesCount": 12,
+  "completionPercentage": 8,
+  "_id": "userId",
+  "sessionDuration": "00:34:05",
+  "modules": [
+    {
+      "_id": "60f19ade70889a488b569f20",
+      "progress": "Completed",
+      "duration": "00:34:05"
+    },
+    {
+      "_id": "60f19ade70889a488b569fa9",
+      "progress": "NotStarted",
+      "duration": "N/A"
+    },
+    {
+      "_id": "60f19ade70889a488b56a02f",
+      "progress": "NotStarted",
+      "duration": "N/A"
+    },
+    {
+      "_id": "60f19ade70889a488b56a0a1",
+      "progress": "NotStarted",
+      "duration": "N/A"
+    },
+    {
+      "_id": "60f19ade70889a488b56a108",
+      "progress": "NotStarted",
+      "duration": "N/A"
+    },
+    {
+      "_id": "60f19ade70889a488b56a177",
+      "progress": "NotStarted",
+      "duration": "N/A"
+    },
+    {
+      "_id": "60f19ade70889a488b56a1f2",
+      "progress": "NotStarted",
+      "duration": "N/A"
+    },
+    {
+      "_id": "60f19ade70889a488b56a263",
+      "progress": "NotStarted",
+      "duration": "N/A"
+    },
+    {
+      "_id": "60f19ade70889a488b56a2ba",
+      "progress": "NotStarted",
+      "duration": "N/A"
+    },
+    {
+      "_id": "60f19ade70889a488b56a323",
+      "progress": "NotStarted",
+      "duration": "N/A"
+    },
+    {
+      "_id": "60f19ade70889a488b56a388",
+      "progress": "NotStarted",
+      "duration": "N/A"
+    },
+    {
+      "_id": "60f19ade70889a488b56a3f6",
+      "progress": "NotStarted",
+      "duration": "N/A"
+    }
+  ],
+  "groupsNames": ""
+}
