@@ -1,11 +1,10 @@
-use bson::{doc, oid::ObjectId, Bson, Document};
+use bson::{doc, oid::ObjectId, Document};
 use futures::stream::TryStreamExt;
 use http::StatusCode;
 use mongodb::{
     options::{ClientOptions, ResolverConfig},
     Client, Database,
 };
-use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::{collections::HashMap, str::FromStr};
 use std::{env, time::Instant};
@@ -38,9 +37,35 @@ async fn gt_db(db_name: &str) -> Result<Database, Box<dyn Error>> {
     Ok(db)
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct ActiveModules {
-    active_modules: Vec<ObjectId>,
+async fn get_users_groups_names(
+    db: &Database,
+    publication_id: &str,
+) -> Result<Vec<Document>, Box<dyn Error>> {
+    let groups = db.collection::<Document>("learners_group");
+    let publication_id = ObjectId::from_str(publication_id)?;
+    let cursor = groups
+        .aggregate(
+            [
+                doc! { "$match": { "publications": publication_id }, },
+                doc! { "$unwind": "$users", },
+                doc! {
+                  "$group": {
+                    "_id": "$users",
+                    "groups": { "$push": "$name", },
+                  },
+                },
+                doc! {
+                    "$project": {
+                        "user": "$_id",
+                        "groups": 1,
+                    },
+                },
+            ],
+            None,
+        )
+        .await?;
+    let users_groups_names = cursor.try_collect::<Vec<Document>>().await?;
+    Ok(users_groups_names)
 }
 
 async fn get_active_modules(
@@ -50,7 +75,7 @@ async fn get_active_modules(
     let collection = db.collection::<Document>("course");
     let publication_id = ObjectId::from_str(publication_id)?;
 
-    let mut cursor = collection
+    let cursor = collection
         .aggregate(
             [
                 doc! { "$match": doc! { "_id": publication_id, } },
@@ -93,55 +118,19 @@ async fn get_active_modules(
                     }
                 },
                 doc! {
-                    "$group": doc! {
-                        "_id": Bson::Null,
-                        "active_modules": doc! {
-                            "$push": "$modules._id"
-                        }
-                    }
+                    "$project": doc! { "_id": "$modules._id" }
                 },
             ],
             None,
         )
         .await?;
 
-    if let Some(document) = cursor.try_next().await? {
-        let publication: ActiveModules = bson::from_document(document)?;
-        Ok(publication.active_modules)
-    } else {
-        Err("Publication not found".into())
-    }
-}
-
-async fn get_users_groups_names(
-    db: &Database,
-    publication_id: &str,
-) -> Result<Vec<Document>, Box<dyn Error>> {
-    let groups = db.collection::<Document>("learners_group");
-    let publication_id = ObjectId::from_str(publication_id)?;
-    let cursor = groups
-        .aggregate(
-            [
-                doc! { "$match": { "publications": publication_id }, },
-                doc! { "$unwind": "$users", },
-                doc! {
-                  "$group": {
-                    "_id": "$users",
-                    "groups": { "$push": "$name", },
-                  },
-                },
-                doc! {
-                    "$project": {
-                        "user": "$_id",
-                        "groups": 1,
-                    },
-                },
-            ],
-            None,
-        )
-        .await?;
-    let users_groups_names = cursor.try_collect::<Vec<Document>>().await?;
-    Ok(users_groups_names)
+    let active_modules = cursor.try_collect::<Vec<Document>>().await?;
+    let active_modules = active_modules
+        .iter()
+        .map(|doc| doc.get_object_id("_id").unwrap().clone())
+        .collect();
+    Ok(active_modules)
 }
 
 #[tokio::main]
