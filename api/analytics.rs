@@ -3,7 +3,7 @@ use futures::stream::TryStreamExt;
 use http::StatusCode;
 use mongodb::{
     options::{ClientOptions, ResolverConfig},
-    Client,
+    Client, Database,
 };
 use std::error::Error;
 use std::{collections::HashMap, str::FromStr};
@@ -23,20 +23,37 @@ fn parse_url(req: &Request) -> Result<(String, String), Box<dyn Error>> {
     }
 }
 
-#[tokio::main]
-async fn list_db(
-    db_name: &str,
-    publication_id: ObjectId,
-) -> Result<Vec<Document>, mongodb::error::Error> {
-    let start = Instant::now();
+async fn get_client() -> Result<Client, Box<dyn Error>> {
     let uri = env::var("MONGODB_URI").expect("MONGODB_URI must be set");
     let options =
         ClientOptions::parse_with_resolver_config(&uri, ResolverConfig::cloudflare()).await?;
     let client = Client::with_options(options)?;
-    println!("Connection to MongoDB: {} ms", start.elapsed().as_millis());
+    Ok(client)
+}
 
+async fn gt_db(db_name: &str) -> Result<Database, Box<dyn Error>> {
+    let client = get_client().await?;
     let db = client.database(db_name);
+    Ok(db)
+}
+
+async fn get_publication(db: &Database, publication_id: &str) -> Result<Document, Box<dyn Error>> {
+    let collection = db.collection("course");
+    let id = ObjectId::from_str(publication_id)?;
+    println!("publication_id: {}", id);
+    let publication = collection.find_one(doc! { "_id": id }, None).await?;
+    match publication {
+        Some(doc) => Ok(doc),
+        None => Err("Publication not found".into()),
+    }
+}
+
+async fn get_users_groups_names(
+    db: &Database,
+    publication_id: &str,
+) -> Result<Vec<Document>, Box<dyn Error>> {
     let groups = db.collection::<Document>("learners_group");
+    let publication_id = ObjectId::from_str(publication_id)?;
     let cursor = groups
         .aggregate(
             [
@@ -48,23 +65,48 @@ async fn list_db(
                     "groups": { "$push": "$name", },
                   },
                 },
+                doc! {
+                    "$project": {
+                        "user": "$_id",
+                        "groups": 1,
+                    },
+                },
             ],
             None,
         )
         .await?;
+    let users_groups_names = cursor.try_collect::<Vec<Document>>().await?;
+    Ok(users_groups_names)
+}
 
-    println!("Get Document: {} ms", start.elapsed().as_millis());
+#[tokio::main]
+async fn calc(db_name: &str, publication_id: &str) -> Result<Vec<Document>, Box<dyn Error>> {
+    // The array at the beginning of the line indicates what is required before the calculation (u
+    // is for user and c for course)
 
-    let users_groups_names = cursor.try_collect::<Vec<Document>>().await;
+    let start = Instant::now();
 
-    users_groups_names
+    let db = gt_db(db_name).await?;
+    println!("Connection to MongoDB: {} ms", start.elapsed().as_millis());
+
+    // BATCH A
+    // 1. [u?] GET the usersGroupsNames PER USER  ---> 'learners_group' collection
+    // 2. [c] GET the publication for one database (name in the query) ---> 'course' collection
+    let (_publication, users_groups_names) = tokio::try_join!(
+        get_publication(&db, publication_id),
+        get_users_groups_names(&db, publication_id),
+    )?;
+    println!(
+        "Get users_groups_names and publication: {} ms",
+        start.elapsed().as_millis()
+    );
+
+    Ok(users_groups_names)
+
     /*
      * The array at the beginning of the line indicates what is required before the calculation (u
      * is for user and c for course)
      *
-     * BATCH A
-     * 1. [u?] GET the usersGroupsNames PER USER  ---> 'learners_group' collection
-     * 2. [c] GET the publication for one database (name in the query) ---> 'course' collection
      *
      * BATCH B
      * 3. [2] -> calculate the activeModulesIds
@@ -84,8 +126,7 @@ async fn list_db(
 
 fn get_results(req: Request) -> Result<Vec<Document>, Box<dyn Error>> {
     let (db_name, publication_id) = parse_url(&req)?;
-    let publication_id = ObjectId::from_str(&publication_id)?;
-    match list_db(&db_name, publication_id) {
+    match calc(&db_name, &publication_id) {
         Ok(results) => Ok(results),
         Err(e) => Err(e.into()),
     }
