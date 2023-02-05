@@ -37,6 +37,7 @@ dependencies = [
  "futures 0.3.26",
  "http",
  "mongodb",
+ "serde",
  "serde_json",
  "tokio 1.25.0",
  "url",

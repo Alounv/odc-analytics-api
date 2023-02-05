@@ -1,10 +1,11 @@
-use bson::{doc, oid::ObjectId, Document};
+use bson::{doc, oid::ObjectId, Bson, Document};
 use futures::stream::TryStreamExt;
 use http::StatusCode;
 use mongodb::{
     options::{ClientOptions, ResolverConfig},
     Client, Database,
 };
+use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::{collections::HashMap, str::FromStr};
 use std::{env, time::Instant};
@@ -12,7 +13,7 @@ use url::Url;
 use vercel_lambda::{error::VercelError, lambda, IntoResponse, Request, Response};
 
 fn parse_url(req: &Request) -> Result<(String, String), Box<dyn Error>> {
-    let parsed_url = Url::parse(&req.uri().to_string()).unwrap();
+    let parsed_url = Url::parse(&req.uri().to_string())?;
     let hash_query: HashMap<_, _> = parsed_url.query_pairs().into_owned().collect();
     if hash_query.contains_key("db") && hash_query.contains_key("publication") {
         let db_name = hash_query.get("db").unwrap().to_string();
@@ -37,14 +38,78 @@ async fn gt_db(db_name: &str) -> Result<Database, Box<dyn Error>> {
     Ok(db)
 }
 
-async fn get_publication(db: &Database, publication_id: &str) -> Result<Document, Box<dyn Error>> {
-    let collection = db.collection("course");
-    let id = ObjectId::from_str(publication_id)?;
-    println!("publication_id: {}", id);
-    let publication = collection.find_one(doc! { "_id": id }, None).await?;
-    match publication {
-        Some(doc) => Ok(doc),
-        None => Err("Publication not found".into()),
+#[derive(Debug, Serialize, Deserialize)]
+struct ActiveModules {
+    active_modules: Vec<ObjectId>,
+}
+
+async fn get_active_modules(
+    db: &Database,
+    publication_id: &str,
+) -> Result<Vec<ObjectId>, Box<dyn Error>> {
+    let collection = db.collection::<Document>("course");
+    let publication_id = ObjectId::from_str(publication_id)?;
+
+    let mut cursor = collection
+        .aggregate(
+            [
+                doc! { "$match": doc! { "_id": publication_id, } },
+                doc! { "$project": doc! { "chapters.modules": 1 } },
+                doc! {
+                    "$lookup": doc! {
+                        "from": "course_module",
+                        "localField": "chapters.modules",
+                        "foreignField": "_id",
+                        "as": "modules"
+                    }
+                },
+                doc! {
+                    "$unwind": doc! {
+                        "path": "$modules",
+                        "preserveNullAndEmptyArrays": true
+                    }
+                },
+                doc! {
+                    "$lookup": doc! {
+                        "from": "topic",
+                        "localField": "modules.topic",
+                        "foreignField": "_id",
+                        "as": "modules.topic"
+                    }
+                },
+                doc! {
+                    "$lookup": doc! {
+                        "from": "granule",
+                        "localField": "modules.topic.granules",
+                        "foreignField": "_id",
+                        "as": "modules.topic.granules"
+                    }
+                },
+                doc! {
+                    "$match": doc! {
+                        "modules.topic.granules": doc! {
+                            "$elemMatch": doc! { "isDraft": doc! { "$ne": true } }
+                        }
+                    }
+                },
+                doc! {
+                    "$group": doc! {
+                        "_id": Bson::Null,
+                        "active_modules": doc! {
+                            "$push": "$modules._id"
+                        }
+                    }
+                },
+            ],
+            None,
+        )
+        .await?;
+
+    if let Some(document) = cursor.try_next().await? {
+        let publication: ActiveModules = bson::from_document(document)?;
+        Ok(publication.active_modules)
+    } else {
+        Err("Publication not found".into())
     }
 }
 
@@ -91,34 +156,33 @@ async fn calc(db_name: &str, publication_id: &str) -> Result<Vec<Document>, Box<
 
     // BATCH A
     // 1. [u?] GET the usersGroupsNames PER USER  ---> 'learners_group' collection
-    // 2. [c] GET the publication for one database (name in the query) ---> 'course' collection
-    let (_publication, users_groups_names) = tokio::try_join!(
-        get_publication(&db, publication_id),
-        get_users_groups_names(&db, publication_id),
+    // 2. [c] GET the activeModules for the publication ---> 'course' collection
+    let (users_groups_names, active_modules) = tokio::try_join!(
+        get_users_groups_names(&db, publication_id), // TODO: add possiblity to filter for one user
+        get_active_modules(&db, publication_id),
     )?;
     println!(
-        "Get users_groups_names and publication: {} ms",
+        "Get users_groups_names and active_modules: {} ms",
         start.elapsed().as_millis()
     );
+
+    println!("active_modules: {:#?}", active_modules);
 
     Ok(users_groups_names)
 
     /*
-     * The array at the beginning of the line indicates what is required before the calculation (u
-     * is for user and c for course)
-     *
-     *
      * BATCH B
-     * 3. [2] -> calculate the activeModulesIds
      * 4. [2, u?] -> GET the usersSessionSprints for the course PER USER ---> 'course_module_sprint' collection
      * (This should include the completion date at the end of the aggregate).
      *
      * BATCH C
      * 5. [4] -> group granuleSprints PER USE (1st level) and PER MODULE (2nd level)
-     * 6. [5] -> GET usersModulesDurations PER USER (1st level) and PER MODULE (2nd level) ---> 'granule_sprint' collection
      *
      * BATCH D
-     * 8. [3,4,5] -> loop through each usersSessionsSprints
+     * 6. [5] -> GET usersModulesDurations PER USER (1st level) and PER MODULE (2nd level) ---> 'granule_sprint' collection
+     *
+     * BATCH E
+     * 8. [2,4,5] -> loop through each usersSessionsSprints
      *    8.1. Format course data
      *    8.2. Format module specific data
      */
