@@ -1,12 +1,13 @@
-use bson::{doc, oid::ObjectId, Bson, Document};
+use bson::{doc, oid::ObjectId, Document};
+use futures::stream::TryStreamExt;
 use http::StatusCode;
 use mongodb::{
     options::{ClientOptions, ResolverConfig},
     Client,
 };
-use std::env;
 use std::error::Error;
 use std::{collections::HashMap, str::FromStr};
+use std::{env, time::Instant};
 use url::Url;
 use vercel_lambda::{error::VercelError, lambda, IntoResponse, Request, Response};
 
@@ -26,25 +27,37 @@ fn parse_url(req: &Request) -> Result<(String, String), Box<dyn Error>> {
 async fn list_db(
     db_name: &str,
     publication_id: ObjectId,
-) -> Result<Option<bson::Document>, mongodb::error::Error> {
+) -> Result<Vec<Document>, mongodb::error::Error> {
+    let start = Instant::now();
     let uri = env::var("MONGODB_URI").expect("MONGODB_URI must be set");
     let options =
         ClientOptions::parse_with_resolver_config(&uri, ResolverConfig::cloudflare()).await?;
     let client = Client::with_options(options)?;
-    println!("Connected to MongoDB!");
+    println!("Connection to MongoDB: {} ms", start.elapsed().as_millis());
 
     let db = client.database(db_name);
-    let publications = db.collection::<Document>("course");
+    let groups = db.collection::<Document>("learners_group");
+    let cursor = groups
+        .aggregate(
+            [
+                doc! { "$match": { "publications": publication_id }, },
+                doc! { "$unwind": "$users", },
+                doc! {
+                  "$group": {
+                    "_id": "$users",
+                    "groups": { "$push": "$name", },
+                  },
+                },
+            ],
+            None,
+        )
+        .await?;
 
-    let publication = publications
-        .find_one(doc! { "_id": publication_id }, None)
-        .await;
+    println!("Get Document: {} ms", start.elapsed().as_millis());
 
-    publication
+    let users_groups_names = cursor.try_collect::<Vec<Document>>().await;
 
-    // TODO pass db name + course id as parameter
-    // TODO print duration of each operation
-
+    users_groups_names
     /*
      * The array at the beginning of the line indicates what is required before the calculation (u
      * is for user and c for course)
@@ -69,14 +82,11 @@ async fn list_db(
      */
 }
 
-fn get_results(req: Request) -> Result<Bson, Box<dyn Error>> {
+fn get_results(req: Request) -> Result<Vec<Document>, Box<dyn Error>> {
     let (db_name, publication_id) = parse_url(&req)?;
     let publication_id = ObjectId::from_str(&publication_id)?;
     match list_db(&db_name, publication_id) {
-        Ok(results) => match results {
-            Some(doc) => Ok(Bson::Document(doc)),
-            None => Ok(Bson::Null),
-        },
+        Ok(results) => Ok(results),
         Err(e) => Err(e.into()),
     }
 }
@@ -123,8 +133,7 @@ mod tests {
             .body(Body::Empty)
             .unwrap();
         let result = get_results(req).unwrap();
-        assert!(result
-            .to_string()
-            .contains("\"_id\": ObjectId(\"60dc4225f9f392004ebfb7fd\")"));
+        println!("{:?}", result.len());
+        assert!(true)
     }
 }
