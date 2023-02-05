@@ -1,12 +1,12 @@
-use bson::{doc, Bson, Document};
+use bson::{doc, oid::ObjectId, Bson, Document};
 use http::StatusCode;
 use mongodb::{
     options::{ClientOptions, ResolverConfig},
     Client,
 };
-use std::collections::HashMap;
 use std::env;
 use std::error::Error;
+use std::{collections::HashMap, str::FromStr};
 use url::Url;
 use vercel_lambda::{error::VercelError, lambda, IntoResponse, Request, Response};
 
@@ -23,7 +23,10 @@ fn parse_url(req: &Request) -> Result<(String, String), Box<dyn Error>> {
 }
 
 #[tokio::main]
-async fn list_db(db_name: &str, _publication_id: &str) -> Result<Vec<Bson>, mongodb::error::Error> {
+async fn list_db(
+    db_name: &str,
+    publication_id: ObjectId,
+) -> Result<Option<bson::Document>, mongodb::error::Error> {
     let uri = env::var("MONGODB_URI").expect("MONGODB_URI must be set");
     let options =
         ClientOptions::parse_with_resolver_config(&uri, ResolverConfig::cloudflare()).await?;
@@ -31,9 +34,13 @@ async fn list_db(db_name: &str, _publication_id: &str) -> Result<Vec<Bson>, mong
     println!("Connected to MongoDB!");
 
     let db = client.database(db_name);
-    let users = db.collection::<Document>("user");
+    let publications = db.collection::<Document>("course");
 
-    return users.distinct("_cls", doc! {}, None).await;
+    let publication = publications
+        .find_one(doc! { "_id": publication_id }, None)
+        .await;
+
+    publication
 
     // TODO pass db name + course id as parameter
     // TODO print duration of each operation
@@ -62,10 +69,14 @@ async fn list_db(db_name: &str, _publication_id: &str) -> Result<Vec<Bson>, mong
      */
 }
 
-fn get_results(req: Request) -> Result<Vec<Bson>, Box<dyn Error>> {
+fn get_results(req: Request) -> Result<Bson, Box<dyn Error>> {
     let (db_name, publication_id) = parse_url(&req)?;
-    match list_db(&db_name, &publication_id) {
-        Ok(results) => Ok(results),
+    let publication_id = ObjectId::from_str(&publication_id)?;
+    match list_db(&db_name, publication_id) {
+        Ok(results) => match results {
+            Some(doc) => Ok(Bson::Document(doc)),
+            None => Ok(Bson::Null),
+        },
         Err(e) => Err(e.into()),
     }
 }
@@ -100,10 +111,20 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 #[cfg(test)]
 mod tests {
-    // use super::*;
+    use vercel_lambda::Body;
+
+    use super::*;
 
     #[test]
-    fn test_example() {
-        assert_eq!(true, true);
+    fn test_get_results() {
+        env::set_var("MONGODB_URI", "mongodb://localhost:27017");
+        let req = http::Request::builder()
+            .uri("https://api.example.com/analytics?db=V5&publication=60dc4225f9f392004ebfb7fd")
+            .body(Body::Empty)
+            .unwrap();
+        let result = get_results(req).unwrap();
+        assert!(result
+            .to_string()
+            .contains("\"_id\": ObjectId(\"60dc4225f9f392004ebfb7fd\")"));
     }
 }
