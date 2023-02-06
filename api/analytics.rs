@@ -149,6 +149,83 @@ async fn get_active_modules(
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+struct CompletionDate {
+    user: ObjectId,
+    #[serde(with = "bson::serde_helpers::chrono_datetime_as_bson_datetime")]
+    date: chrono::DateTime<Utc>,
+}
+
+async fn get_completion_dates(
+    db: &Database,
+    publication_id: &str,
+    active_modules: &Vec<ObjectId>,
+) -> Result<Vec<CompletionDate>, Box<dyn Error>> {
+    let collection = db.collection::<Document>("course");
+    let publication_id = ObjectId::from_str(publication_id)?;
+
+    let cursor = collection
+        .aggregate(
+            [
+                doc! {
+                    "$match": doc! {
+                        "context.course": publication_id,
+                        "courseModule": doc! {
+                            "$in":  active_modules,
+                        },
+                        "user": doc! {
+                            "$exists": true
+                        },
+                        "isClear": true
+                    }
+                },
+                doc! {
+                    "$group": doc! {
+                        "_id": doc! {
+                            "user": "$user",
+                            "module": "$courseModule"
+                        },
+                        "earliestCompletion": doc! {
+                            "$min": "$date_updated"
+                        }
+                    }
+                },
+                doc! {
+                    "$group": doc! {
+                        "_id": "$_id.user",
+                        "courseCompletionDate": doc! {
+                            "$max": "$earliestCompletion"
+                        },
+                        "completedModulesCount": doc! {
+                            "$sum": 1
+                        }
+                    }
+                },
+                doc! {
+                    "$match": doc! {
+                        "completedModulesCount": active_modules.len() as u32
+                    }
+                },
+                doc! {
+                    "$project": doc! {
+                        "_id": 0,
+                        "user": "$_id",
+                        "date": "$courseCompletionDate"
+                    }
+                },
+            ],
+            None,
+        )
+        .await?;
+
+    let completion_dates = cursor.try_collect::<Vec<Document>>().await?;
+    let completion_dates = completion_dates
+        .iter()
+        .map(|doc| bson::from_document::<CompletionDate>(doc.clone()).unwrap())
+        .collect();
+    Ok(completion_dates)
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 struct GranuleSprint {
     course_module_id: ObjectId,
     sprint_ids: Vec<ObjectId>,
@@ -332,33 +409,31 @@ async fn calc(db_name: &str, publication_id: &str) -> Result<Vec<Document>, Box<
         start.elapsed().as_millis()
     );
 
-    // BATCH A
-    // 1. [u?] GET the usersGroupsNames PER USER  ---> 'learners_group' collection
-    // 2. [c] GET the activeModules for the publication ---> 'course' collection
     let (users_groups_names, active_modules, superadmins) = tokio::try_join!(
         get_users_groups_names(&db, publication_id), // TODO: add possiblity to filter for one user
         get_active_modules(&db, publication_id),
         get_superadmin_ids(&db),
     )?;
     println!(
-        "⏱️ {} ms - users_groups_names, superadmins and active_modules",
-        start.elapsed().as_millis()
+        "⏱️ {} ms - users_groups_names {}, superadmins {} and active_modules {}",
+        start.elapsed().as_millis(),
+        users_groups_names.len(),
+        superadmins.len(),
+        active_modules.len()
     );
-    // println!("users_groups_names: {:#?}", users_groups_names);
-    println!("active_modules: {:#?}", active_modules.len());
-    println!("superadmins: {:#?}", superadmins.len());
 
-    // BATCH B
-    // 4. [2, u?] -> GET the usersSessionSprints for the course PER USER ---> 'course_module_sprint' collection
+    let (users_session_sprints, completion_dates) = tokio::try_join!(
+        get_users_session_sprints(&db, &publication_id, &active_modules),
+        get_completion_dates(&db, &publication_id, &active_modules),
+    )?;
     // (This should include the completion date at the end of the aggregate).
-    let users_session_sprints =
-        get_users_session_sprints(&db, &publication_id, &active_modules).await?;
     println!(
-        "⏱️ {} ms - users_session_sprints",
-        start.elapsed().as_millis()
+        "⏱️ {} ms - users_session_sprints {}, completion_dates {}",
+        start.elapsed().as_millis(),
+        users_session_sprints.len(),
+        completion_dates.len()
     );
 
-    println!("users_session_sprints: {:#?}", users_session_sprints.len());
     Ok(users_groups_names)
 
     /*
