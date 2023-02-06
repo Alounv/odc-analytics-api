@@ -42,17 +42,44 @@ async fn gt_db(db_name: &str) -> Result<Database, Box<dyn Error>> {
 async fn get_superadmin_ids(db: &Database) -> Result<Vec<ObjectId>, Box<dyn Error>> {
     let start = Instant::now();
     let collection = db.collection::<Document>("user");
-    let superadmins = collection
+    let documents = collection
         .distinct("_id", doc! {"roles": "superadmin"}, None)
         .await?;
 
-    let superadmins = superadmins
+    let superadmins = documents
         .iter()
         .map(|doc| doc.as_object_id().unwrap().clone())
         .collect();
 
     println!("  ➡️ get_superadmin_ids: {} ms", start.elapsed().as_millis());
     Ok(superadmins)
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct User {
+    _id: ObjectId,
+    email: String,
+    lms_learner_id: Option<String>,
+}
+
+async fn get_users(db: &Database) -> Result<HashMap<ObjectId, User>, Box<dyn Error>> {
+    let start = Instant::now();
+    let collection = db.collection::<Document>("user");
+    let cursor = collection
+        .find(doc! {"roles": doc! { "$ne": "superadmin" }}, None)
+        .await?;
+
+    let documents = cursor.try_collect::<Vec<Document>>().await?;
+    let users = documents
+        .iter()
+        .map(|doc| {
+            let value = bson::from_document::<User>(doc.clone()).unwrap();
+            (value._id, value)
+        })
+        .collect();
+
+    println!("  ➡️ get_users: {} ms", start.elapsed().as_millis());
+    Ok(users)
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -785,7 +812,7 @@ struct UserModuleProgress {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct UserAnalytics {
-    _id: ObjectId,
+    user: User,
     date_started: String,
     last_activity: String,
     date_completed: String,
@@ -798,7 +825,7 @@ struct UserAnalytics {
 }
 
 fn get_user_analytics(
-    user_id: &ObjectId,
+    user_opt: Option<&User>,
     user_groups_names: Option<&UserGroupsNames>,
     active_modules: &Vec<ActiveModule>,
     user_sessions_sprints: &UserSessionSprint,
@@ -826,14 +853,22 @@ fn get_user_analytics(
         &user_modules_durations,
     );
 
+    let mut user = User {
+        _id: ObjectId::new(),
+        email: "N/A".to_string(),
+        lms_learner_id: None,
+    };
+    if let Some(found) = user_opt {
+        user = found.clone();
+    }
+
     Ok(UserAnalytics {
-        _id: *user_id,
         date_started: user_sessions_sprints.date_started.to_string(),
         last_activity: user_sessions_sprints.last_activity.to_string(),
         date_completed,
         session_duration,
         groups_names,
-        // user: String,
+        user,
         completed_modules_count: user_sessions_sprints.completed_modules_count,
         active_modules_count: active_modules.len() as u32,
         completion_percentage: user_sessions_sprints.completion_percentage,
@@ -847,6 +882,7 @@ fn get_analytics(
     users_session_sprints: &HashMap<ObjectId, UserSessionSprint>,
     completion_dates: &HashMap<ObjectId, CompletionDate>,
     users_modules_durations: &HashMap<ObjectId, Vec<UserModuleDuration>>,
+    users: &HashMap<ObjectId, User>,
 ) -> Result<Vec<UserAnalytics>, Box<dyn Error>> {
     let start = Instant::now();
 
@@ -856,9 +892,10 @@ fn get_analytics(
             let user_groups_names = users_groups_names.get(user_id);
             let user_modules_durations = users_modules_durations.get(user_id);
             let user_completion_date = completion_dates.get(user_id);
+            let user = users.get(user_id);
 
             get_user_analytics(
-                user_id,
+                user,
                 user_groups_names,
                 active_modules,
                 user_session_sprints,
@@ -885,17 +922,19 @@ async fn calc(db_name: &str, publication_id: &str) -> Result<Vec<UserAnalytics>,
         start.elapsed().as_millis()
     );
 
-    let (users_groups_names, active_modules, superadmins) = tokio::try_join!(
+    let (users_groups_names, active_modules, superadmins, users) = tokio::try_join!(
         get_users_groups_names(&db, publication_id), // TODO: add possiblity to filter for one user
         get_active_modules(&db, publication_id),
         get_superadmin_ids(&db),
+        get_users(&db),
     )?;
     println!(
-        "⏱️ {} ms - users_groups_names {}, superadmins {} and active_modules {}",
+        "⏱️ {} ms - users_groups_names {}, superadmins {}, active_modules {} and users {}",
         start.elapsed().as_millis(),
         users_groups_names.len(),
         superadmins.len(),
-        active_modules.len()
+        active_modules.len(),
+        users.len()
     );
 
     let active_modules_ids = active_modules
@@ -928,6 +967,7 @@ async fn calc(db_name: &str, publication_id: &str) -> Result<Vec<UserAnalytics>,
         &users_session_sprints,
         &completion_dates,
         &users_modules_durations,
+        &users,
     );
 
     // sort analytics by email
