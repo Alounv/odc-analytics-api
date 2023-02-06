@@ -1015,11 +1015,11 @@ fn handler(req: Request) -> Result<impl IntoResponse, VercelError> {
 
     match result {
         Ok(list) => {
-            let data = serde_json::json!(list);
+            let data = serde_json::to_string(&list).unwrap();
             let response = Response::builder()
                 .status(StatusCode::OK)
                 .header("Content-Type", "text/plain")
-                .body(data.to_string())
+                .body(data)
                 .expect("Internal Server Error");
 
             Ok(response)
