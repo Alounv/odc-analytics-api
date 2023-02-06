@@ -64,7 +64,7 @@ struct UserGroupsNames {
 async fn get_users_groups_names(
     db: &Database,
     publication_id: &str,
-) -> Result<Vec<UserGroupsNames>, Box<dyn Error>> {
+) -> Result<HashMap<ObjectId, UserGroupsNames>, Box<dyn Error>> {
     let start = Instant::now();
     let groups = db.collection::<Document>("learners_group");
     let publication_id = ObjectId::from_str(publication_id)?;
@@ -93,7 +93,10 @@ async fn get_users_groups_names(
     let documents = cursor.try_collect::<Vec<Document>>().await?;
     let users_groups_names = documents
         .iter()
-        .map(|doc| bson::from_document::<UserGroupsNames>(doc.clone()).unwrap())
+        .map(|doc| {
+            let value = bson::from_document::<UserGroupsNames>(doc.clone()).unwrap();
+            (value.user, value)
+        })
         .collect();
 
     println!(
@@ -209,7 +212,7 @@ async fn get_completion_dates(
     db: &Database,
     publication_id: &str,
     active_modules_id: &Vec<ObjectId>,
-) -> Result<Vec<CompletionDate>, Box<dyn Error>> {
+) -> Result<HashMap<ObjectId, CompletionDate>, Box<dyn Error>> {
     let start = Instant::now();
 
     let collection = db.collection::<Document>("course");
@@ -272,7 +275,10 @@ async fn get_completion_dates(
     let completion_dates = cursor.try_collect::<Vec<Document>>().await?;
     let completion_dates = completion_dates
         .iter()
-        .map(|doc| bson::from_document::<CompletionDate>(doc.clone()).unwrap())
+        .map(|doc| {
+            let value = bson::from_document::<CompletionDate>(doc.clone()).unwrap();
+            (value.user, value)
+        })
         .collect();
 
     println!(
@@ -649,18 +655,21 @@ async fn get_users_modules_durations(
     Ok(users_modules_durations)
 }
 
-// fn get_analytics(
-//     users_groups_names: &HashMap<ObjectId, String>,
-//     active_modules: &HashMap<ObjectId, ActiveModule>,
-//     users_session_sprints: &HashMap<ObjectId, Vec<UserSessionSprint>>,
-//     completion_dates: &HashMap<ObjectId, Vec<CompletionDate>>,
-//     users_modules_durations: &HashMap<ObjectId, Vec<UserModuleDuration>>,
-// ) {
-//     println!("  ➡️ get_analytics");
-// }
+fn get_analytics(
+    users_groups_names: &HashMap<ObjectId, UserGroupsNames>,
+    active_modules: &Vec<ActiveModule>,
+    users_session_sprints: &HashMap<ObjectId, UserSessionSprint>,
+    completion_dates: &HashMap<ObjectId, CompletionDate>,
+    users_modules_durations: &HashMap<ObjectId, Vec<UserModuleDuration>>,
+) {
+    println!("  ➡️ get_analytics");
+}
 
 #[tokio::main]
-async fn calc(db_name: &str, publication_id: &str) -> Result<Vec<UserGroupsNames>, Box<dyn Error>> {
+async fn calc(
+    db_name: &str,
+    publication_id: &str,
+) -> Result<HashMap<ObjectId, UserGroupsNames>, Box<dyn Error>> {
     // The array at the beginning of the line indicates what is required before the calculation (u
     // is for user and c for course)
 
@@ -703,13 +712,13 @@ async fn calc(db_name: &str, publication_id: &str) -> Result<Vec<UserGroupsNames
         users_modules_durations.len()
     );
 
-    // let analytics = get_analytics(
-    //     &users_groups_names,
-    //     &active_modules,
-    //     &users_session_sprints,
-    //     &completion_dates,
-    //     &users_modules_durations,
-    // );
+    let analytics = get_analytics(
+        &users_groups_names,
+        &active_modules,
+        &users_session_sprints,
+        &completion_dates,
+        &users_modules_durations,
+    );
 
     // sort analytics by email
     Ok(users_groups_names)
@@ -722,7 +731,7 @@ async fn calc(db_name: &str, publication_id: &str) -> Result<Vec<UserGroupsNames
      */
 }
 
-fn get_results(req: Request) -> Result<Vec<UserGroupsNames>, Box<dyn Error>> {
+fn get_results(req: Request) -> Result<HashMap<ObjectId, UserGroupsNames>, Box<dyn Error>> {
     let (db_name, publication_id) = parse_url(&req)?;
     match calc(&db_name, &publication_id) {
         Ok(results) => Ok(results),
