@@ -83,10 +83,16 @@ async fn get_users_groups_names(
     Ok(users_groups_names)
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct ActiveModule {
+    module: ObjectId,
+    active_granules: Vec<ObjectId>,
+}
+
 async fn get_active_modules(
     db: &Database,
     publication_id: &str,
-) -> Result<Vec<ObjectId>, Box<dyn Error>> {
+) -> Result<Vec<ActiveModule>, Box<dyn Error>> {
     let collection = db.collection::<Document>("course");
     let publication_id = ObjectId::from_str(publication_id)?;
 
@@ -133,7 +139,28 @@ async fn get_active_modules(
                     }
                 },
                 doc! {
-                    "$project": doc! { "_id": "$modules._id" }
+                    "$project": doc! {
+                        "_id": 0,
+                        "module": "$modules._id",
+                        "active_granules": doc! {
+                            "$filter": doc! {
+                                "input": "$modules.topic.granules",
+                                "as": "granule",
+                                "cond": doc! { "$ne": [ "$$granule.isDraft", true ] }
+                            },
+                        },
+                    }
+                },
+                doc! {
+                    "$set": doc! {
+                        "active_granules": doc! {
+                            "$map": doc! {
+                                "input": "$active_granules",
+                                "as": "granule",
+                                "in": "$$granule._id"
+                            }
+                        }
+                    }
                 },
             ],
             None,
@@ -143,7 +170,7 @@ async fn get_active_modules(
     let active_modules = cursor.try_collect::<Vec<Document>>().await?;
     let active_modules = active_modules
         .iter()
-        .map(|doc| doc.get_object_id("_id").unwrap().clone())
+        .map(|doc| bson::from_document::<ActiveModule>(doc.clone()).unwrap())
         .collect();
     Ok(active_modules)
 }
@@ -158,7 +185,7 @@ struct CompletionDate {
 async fn get_completion_dates(
     db: &Database,
     publication_id: &str,
-    active_modules: &Vec<ObjectId>,
+    active_modules_id: &Vec<ObjectId>,
 ) -> Result<Vec<CompletionDate>, Box<dyn Error>> {
     let collection = db.collection::<Document>("course");
     let publication_id = ObjectId::from_str(publication_id)?;
@@ -170,7 +197,7 @@ async fn get_completion_dates(
                     "$match": doc! {
                         "context.course": publication_id,
                         "courseModule": doc! {
-                            "$in":  active_modules,
+                            "$in":  active_modules_id,
                         },
                         "user": doc! {
                             "$exists": true
@@ -202,7 +229,7 @@ async fn get_completion_dates(
                 },
                 doc! {
                     "$match": doc! {
-                        "completedModulesCount": active_modules.len() as u32
+                        "completedModulesCount": active_modules_id.len() as u32
                     }
                 },
                 doc! {
@@ -226,7 +253,7 @@ async fn get_completion_dates(
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct GranuleSprint {
+struct ModuleGranulesSprints {
     course_module_id: ObjectId,
     sprint_ids: Vec<ObjectId>,
 }
@@ -242,14 +269,14 @@ struct UserSessionSprint {
     date_started: chrono::DateTime<Utc>,
     #[serde(with = "bson::serde_helpers::chrono_datetime_as_bson_datetime")]
     last_activity: chrono::DateTime<Utc>,
-    granule_sprints: Vec<GranuleSprint>,
+    granule_sprints: Vec<ModuleGranulesSprints>,
 }
 
 async fn get_users_session_sprints(
     db: &Database,
     publication_id: &str,
-    active_modules: &Vec<ObjectId>,
-) -> Result<Vec<UserSessionSprint>, Box<dyn Error>> {
+    active_modules_id: &Vec<ObjectId>,
+) -> Result<HashMap<ObjectId, UserSessionSprint>, Box<dyn Error>> {
     let collection = db.collection::<Document>("course_module_sprint");
 
     let cursor = collection
@@ -298,7 +325,7 @@ async fn get_users_session_sprints(
                 },
                 doc! {
                     "$set": doc! {
-                        "activeModulesIds": active_modules,
+                        "activeModulesIds": active_modules_id,
                     }
                 },
                 doc! {
@@ -372,7 +399,7 @@ async fn get_users_session_sprints(
                                             doc! {
                                                 "$size": "$completedModulesIds"
                                             },
-                                            active_modules.len() as u32
+                                            active_modules_id.len() as u32
                                         ]
                                     },
                                     100
@@ -388,12 +415,202 @@ async fn get_users_session_sprints(
         )
         .await?;
 
-    let users_session_sprints = cursor.try_collect::<Vec<Document>>().await?;
-    let users_session_sprints = users_session_sprints
+    let documents = cursor.try_collect::<Vec<Document>>().await?;
+
+    let users_session_sprints = documents
         .iter()
-        .map(|doc| bson::from_document::<UserSessionSprint>(doc.clone()).unwrap())
-        .collect();
+        .map(|doc| {
+            let value = bson::from_document::<UserSessionSprint>(doc.clone()).unwrap();
+            (value.user, value)
+        })
+        .collect::<HashMap<ObjectId, UserSessionSprint>>();
     Ok(users_session_sprints)
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct UserModuleDuration {
+    user: ObjectId,
+    ms_duration: u64,
+    formatted_duration: String,
+}
+
+async fn get_users_modules_durations(
+    db: &Database,
+    active_modules: &Vec<ActiveModule>,
+) -> Result<HashMap<ObjectId, Vec<UserModuleDuration>>, Box<dyn Error>> {
+    let mut users_modules_durations: HashMap<ObjectId, Vec<UserModuleDuration>> = HashMap::new();
+
+    for active_module in active_modules.iter() {
+        let collection = db.collection::<Document>("granule_sprint");
+        let cursor = collection
+            .aggregate(
+                [
+                    doc! {
+                        "$match": doc! {
+                            "_cls": "Training",
+                            "context.course": ObjectId::parse_str("60dc4225f9f392004ebfb7fd")?,
+                            "granule": doc! { "$in": active_module.active_granules.clone(), }
+                        }
+                    },
+                    doc! {
+                        "$set": doc! {
+                            "msSessionDuration": doc! {
+                                "$subtract": [
+                                    doc! { "$arrayElemAt": [ "$events.timestamp", -1 ] },
+                                    doc! { "$arrayElemAt": [ "$events.timestamp", 0 ] }
+                                ]
+                            },
+                            "isCompleted": doc! {
+                                "$cond": [
+                                    doc! { "$eq": [ "$isCompleted", true ] },
+                                    1,
+                                    0
+                                ]
+                            },
+                            "breaks": doc! {
+                                "$reduce": doc! {
+                                    "input": doc! {
+                                        "$filter": doc! {
+                                            "input": "$events",
+                                            "cond": doc! {
+                                                "$or": [
+                                                    doc! { "$eq": [ "$$this.eventType", "granuleReturn" ] },
+                                                    doc! { "$and": [
+                                                        doc! { "$eq": [ "$$this.eventType", "granuleLeft" ] },
+                                                        doc! { "$ne": [ "$$this._id", doc! { "$arrayElemAt": [ "$events._id", -1 ] } ] }
+                                                        ]
+                                                    }
+                                                ]
+                                            }
+                                        }
+                                    },
+                                    "initialValue": 0,
+                                    "in": doc! {
+                                        "$cond": [
+                                            doc! {
+                                                "$eq": [
+                                                    "$$this.eventType",
+                                                    "granuleLeft"
+                                                ]
+                                            },
+                                            doc! {
+                                                "$sum": [
+                                                    "$$value",
+                                                    doc! { "$toLong": "$$this.timestamp" }
+                                                ]
+                                            },
+                                            doc! {
+                                                "$subtract": [
+                                                    "$$value",
+                                                    doc! { "$toLong": "$$this.timestamp" }
+                                                ]
+                                            }
+                                        ]
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    doc! {
+                        "$group": doc! {
+                            "_id": "$user",
+                            "msSessionDuration": doc! {
+                                "$sum": "$msSessionDuration"
+                            },
+                            "breaks": doc! {
+                                "$sum": "$breaks"
+                            }
+                        }
+                    },
+                    doc! {
+                        "$project": doc! {
+                            "msSessionDuration": doc! {
+                                "$add": [
+                                    "$msSessionDuration",
+                                    "$breaks"
+                                ]
+                            }
+                        }
+                    },
+                    doc! {
+                        "$set": doc! {
+                            "s": doc! {
+                                "$toString": doc! {
+                                    "$floor": doc! {
+                                        "$mod": [ doc! { "$divide": [ "$msSessionDuration", 1000 ] }, 60 ]
+                                    }
+                                }
+                            },
+                            "m": doc! {
+                                "$toString": doc! {
+                                    "$floor": doc! {
+                                        "$mod": [
+                                            doc! { "$divide": [ "$msSessionDuration", doc! { "$multiply": 60000 } ] }, 60
+                                        ]
+                                    }
+                                }
+                            },
+                            "h": doc! {
+                                "$toString": doc! {
+                                    "$floor": doc! {
+                                        "$mod": [
+                                            doc! { "$divide": [ "$msSessionDuration", doc! { "$multiply": 3600000 } ] }, 24
+                                        ]
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    doc! {
+                        "$project": doc! {
+                            "_id": 0,
+                            "user": "$_id",
+                            "ms_duration": "$msSessionDuration",
+                            "formatted_duration": doc! {
+                                "$concat": [
+                                    doc! {
+                                        "$cond": [
+                                            doc! { "$eq": [ doc! { "$strLenCP": "$h" }, 1 ] },
+                                            doc! { "$concat": [ "0", "$h" ] },
+                                            "$h"
+                                        ]
+                                    },
+                                    ":",
+                                    doc! {
+                                        "$cond": [
+                                            doc! { "$eq": [ doc! { "$strLenCP": "$m" }, 1 ] },
+                                            doc! { "$concat": [ "0", "$m" ] },
+                                            "$m"
+                                        ]
+                                    },
+                                    ":",
+                                    doc! {
+                                        "$cond": [
+                                            doc! { "$eq": [ doc! { "$strLenCP": "$s" }, 1 ] },
+                                            doc! { "$concat": [ "0", "$s" ] },
+                                            "$s"
+                                        ]
+                                    }
+                                ]
+                            }
+                        }
+                    },
+                ],
+                None,
+            )
+            .await?;
+
+        let documents = cursor.try_collect::<Vec<Document>>().await?;
+        documents.iter().for_each(|doc| {
+            let value = bson::from_document::<UserModuleDuration>(doc.clone()).unwrap();
+
+            users_modules_durations
+                .entry(value.user)
+                .or_insert_with(Vec::new)
+                .push(value);
+        });
+    }
+    Ok(users_modules_durations)
 }
 
 #[tokio::main]
@@ -422,31 +639,28 @@ async fn calc(db_name: &str, publication_id: &str) -> Result<Vec<Document>, Box<
         active_modules.len()
     );
 
-    let (users_session_sprints, completion_dates) = tokio::try_join!(
-        get_users_session_sprints(&db, &publication_id, &active_modules),
-        get_completion_dates(&db, &publication_id, &active_modules),
+    let active_modules_ids = active_modules
+        .iter()
+        .map(|m| m.module)
+        .collect::<Vec<ObjectId>>();
+
+    let (users_session_sprints, completion_dates, users_modules_durations) = tokio::try_join!(
+        get_users_session_sprints(&db, &publication_id, &active_modules_ids),
+        get_completion_dates(&db, &publication_id, &active_modules_ids),
+        get_users_modules_durations(&db, &active_modules),
     )?;
     // (This should include the completion date at the end of the aggregate).
     println!(
-        "⏱️ {} ms - users_session_sprints {}, completion_dates {}",
+        "⏱️ {} ms - users_session_sprints {}, completion_dates {}, users modules durations {}",
         start.elapsed().as_millis(),
         users_session_sprints.len(),
-        completion_dates.len()
+        completion_dates.len(),
+        users_modules_durations.len()
     );
 
     Ok(users_groups_names)
 
     /*
-     * BATCH B
-     * 4. [2, u?] -> GET the usersSessionSprints for the course PER USER ---> 'course_module_sprint' collection
-     * (This should include the completion date at the end of the aggregate).
-     *
-     * BATCH C
-     * 5. [4] -> group granuleSprints PER USE (1st level) and PER MODULE (2nd level)
-     *
-     * BATCH D
-     * 6. [5] -> GET usersModulesDurations PER USER (1st level) and PER MODULE (2nd level) ---> 'granule_sprint' collection
-     *
      * BATCH E
      * 8. [2,4,5] -> loop through each usersSessionsSprints
      *    8.1. Format course data
