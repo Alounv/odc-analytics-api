@@ -1,5 +1,5 @@
-use bson::{doc, oid::ObjectId, Document};
-use chrono::Utc;
+use bson::{doc, oid::ObjectId, Bson::Null, Document};
+use chrono::{DateTime, Utc};
 use futures::stream::TryStreamExt;
 use http::StatusCode;
 use mongodb::{
@@ -205,7 +205,7 @@ async fn get_active_modules(
 struct CompletionDate {
     user: ObjectId,
     #[serde(with = "bson::serde_helpers::chrono_datetime_as_bson_datetime")]
-    date: chrono::DateTime<Utc>,
+    date: DateTime<Utc>,
 }
 
 async fn get_completion_dates(
@@ -215,7 +215,7 @@ async fn get_completion_dates(
 ) -> Result<HashMap<ObjectId, CompletionDate>, Box<dyn Error>> {
     let start = Instant::now();
 
-    let collection = db.collection::<Document>("course");
+    let collection = db.collection::<Document>("course_module_sprint");
     let publication_id = ObjectId::from_str(publication_id)?;
 
     let cursor = collection
@@ -224,12 +224,8 @@ async fn get_completion_dates(
                 doc! {
                     "$match": doc! {
                         "context.course": publication_id,
-                        "courseModule": doc! {
-                            "$in":  active_modules_id,
-                        },
-                        "user": doc! {
-                            "$exists": true
-                        },
+                        "courseModule": doc! { "$in":  active_modules_id, },
+                        "user": doc! { "$ne": Null },
                         "isClear": true
                     }
                 },
@@ -272,8 +268,8 @@ async fn get_completion_dates(
         )
         .await?;
 
-    let completion_dates = cursor.try_collect::<Vec<Document>>().await?;
-    let completion_dates = completion_dates
+    let documents = cursor.try_collect::<Vec<Document>>().await?;
+    let completion_dates = documents
         .iter()
         .map(|doc| {
             let value = bson::from_document::<CompletionDate>(doc.clone()).unwrap();
@@ -302,9 +298,9 @@ struct UserSessionSprint {
     completed_modules_ids: Vec<ObjectId>,
     started_modules_ids: Vec<ObjectId>,
     #[serde(with = "bson::serde_helpers::chrono_datetime_as_bson_datetime")]
-    date_started: chrono::DateTime<Utc>,
+    date_started: DateTime<Utc>,
     #[serde(with = "bson::serde_helpers::chrono_datetime_as_bson_datetime")]
-    last_activity: chrono::DateTime<Utc>,
+    last_activity: DateTime<Utc>,
     granule_sprints: Vec<ModuleGranulesSprints>,
 }
 
@@ -316,6 +312,7 @@ async fn get_users_session_sprints(
 ) -> Result<HashMap<ObjectId, UserSessionSprint>, Box<dyn Error>> {
     let start = Instant::now();
     let collection = db.collection::<Document>("course_module_sprint");
+    let publication_id = ObjectId::from_str(publication_id)?;
 
     let cursor = collection
         .aggregate(
@@ -323,13 +320,10 @@ async fn get_users_session_sprints(
                 doc! {
                     "$match": doc! {
                         "_cls": "Training",
-                        "context.course": ObjectId::parse_str(publication_id)?,
-                        "user": doc! { "$exists": true, },
+                        "context.course": publication_id,
+                        "user": doc! { "$ne": Null, },
                         "user": doc! { "$nin": superadmins }
                     }
-                },
-                doc! {
-                    "$unwind": "$user"
                 },
                 doc! {
                     "$unwind": "$granuleSprints"
@@ -442,13 +436,17 @@ async fn get_users_session_sprints(
                         "started_modules_ids": "$startedModulesIds"
                     }
                 },
+                doc! {
+                    "$match": doc! {
+                        "user": doc! { "$ne": Null, },
+                    }
+                },
             ],
             None,
         )
         .await?;
 
-    let documents = cursor.try_collect::<Vec<Document>>().await?;
-
+    let documents = cursor.try_collect::<Vec<Document>>().await.unwrap();
     let users_session_sprints = documents
         .iter()
         .map(|doc| {
@@ -464,18 +462,21 @@ async fn get_users_session_sprints(
     Ok(users_session_sprints)
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 struct UserModuleDuration {
     user: ObjectId,
-    ms_duration: u64,
+    ms_duration: i64,
     formatted_duration: String,
 }
 
 async fn get_users_modules_durations(
     db: &Database,
+    publication_id: &str,
     active_modules: &Vec<ActiveModule>,
+    superadmins: &Vec<ObjectId>,
 ) -> Result<HashMap<ObjectId, Vec<UserModuleDuration>>, Box<dyn Error>> {
     let start = Instant::now();
+    let publication_id = ObjectId::parse_str(publication_id)?;
     let mut users_modules_durations: HashMap<ObjectId, Vec<UserModuleDuration>> = HashMap::new();
 
     for active_module in active_modules.iter() {
@@ -486,8 +487,10 @@ async fn get_users_modules_durations(
                     doc! {
                         "$match": doc! {
                             "_cls": "Training",
-                            "context.course": ObjectId::parse_str("60dc4225f9f392004ebfb7fd")?,
-                            "granule": doc! { "$in": active_module.active_granules.clone(), }
+                            "context.course": publication_id,
+                            "granule": doc! { "$in": active_module.active_granules.clone() },
+                            "user": doc! { "$ne": Null },
+                            "user": doc! { "$nin": superadmins }
                         }
                     },
                     doc! {
@@ -633,12 +636,18 @@ async fn get_users_modules_durations(
                             }
                         }
                     },
+                    doc! {
+                        "$match": doc! {
+                            "user": doc! { "$ne": Null },
+                        }
+                    },
                 ],
                 None,
             )
             .await?;
 
         let documents = cursor.try_collect::<Vec<Document>>().await?;
+
         documents.iter().for_each(|doc| {
             let value = bson::from_document::<UserModuleDuration>(doc.clone()).unwrap();
 
@@ -655,21 +664,139 @@ async fn get_users_modules_durations(
     Ok(users_modules_durations)
 }
 
+fn format_duration(duration: i64) -> String {
+    let seconds = duration / 1000;
+    let hours = seconds / 3600;
+    let minutes = (seconds % 3600) / 60;
+    let seconds = seconds % 60;
+    format!("{:02}:{:02}:{:02}", hours, minutes, seconds)
+}
+
+fn get_users_durations(
+    user_modules_durations: Option<&Vec<UserModuleDuration>>,
+) -> (String, Vec<UserModuleDuration>) {
+    let mut result = ("N/A".to_string(), Vec::new());
+
+    if let Some(user_durations) = user_modules_durations {
+        let ms_duration = user_durations
+            .iter()
+            .map(|module| module.ms_duration)
+            .sum::<i64>();
+        result = (format_duration(ms_duration), user_durations.clone())
+    }
+
+    result
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+enum ModuleProgress {
+    NotStarted,
+    Started,
+    Completed,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct UserModuleProgress {
+    user: ObjectId,
+    progress: ModuleProgress,
+    duration: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct UserAnalytics {
+    _id: ObjectId,
+    date_started: String,
+    last_activity: String,
+    date_completed: String,
+    session_duration: String,
+    groups_names: String,
+    // completed_modules_count: i32,
+    // active_modules_count: i32,
+    // completion_percentage: f32,
+    // modules: Vec<UserModuleProgress>,
+}
+
+fn get_user_analytics(
+    user_id: &ObjectId,
+    user_groups_names: Option<&UserGroupsNames>,
+    active_modules: &Vec<ActiveModule>,
+    user_sessions_sprints: &UserSessionSprint,
+    user_modules_durations: Option<&Vec<UserModuleDuration>>,
+    user_completion_date: Option<&CompletionDate>,
+) -> Result<UserAnalytics, Box<dyn Error>> {
+    let (session_duration, user_modules_durations) = get_users_durations(user_modules_durations);
+
+    let mut groups_names = vec![];
+    if let Some(user_groups_names) = user_groups_names {
+        groups_names = user_groups_names.groups.clone();
+    }
+    groups_names.sort_by(|a, b| a.cmp(b));
+    let groups_names = groups_names.join("/");
+
+    let mut date_completed = "N/A".to_string();
+    if let Some(user_completion_date) = user_completion_date {
+        date_completed = user_completion_date.date.to_string();
+    }
+
+    // const { completedModulesIds, user, startedModulesIds } =
+    //   userTrainingSessionSprint
+    // const userId = user._id.toString()
+    //
+    // const modules = this.getUserModulesAnalytics({
+    //   activeModulesIds,
+    //   completedModulesIds,
+    //   startedModulesIds,
+    //   userModulesDurations,
+    // })
+
+    Ok(UserAnalytics {
+        _id: *user_id,
+        date_started: user_sessions_sprints.date_started.to_string(),
+        last_activity: user_sessions_sprints.last_activity.to_string(),
+        date_completed,
+        session_duration,
+        groups_names,
+        // user: String,
+        // completed_modules_count: i32,
+        // active_modules_count: i32,
+        // completion_percentage: f32,
+        // modules: Vec<UserModuleProgress>,
+    })
+}
+
 fn get_analytics(
     users_groups_names: &HashMap<ObjectId, UserGroupsNames>,
     active_modules: &Vec<ActiveModule>,
     users_session_sprints: &HashMap<ObjectId, UserSessionSprint>,
     completion_dates: &HashMap<ObjectId, CompletionDate>,
     users_modules_durations: &HashMap<ObjectId, Vec<UserModuleDuration>>,
-) {
-    println!("  ➡️ get_analytics");
+) -> Result<Vec<UserAnalytics>, Box<dyn Error>> {
+    let start = Instant::now();
+
+    let analytics = users_session_sprints
+        .iter()
+        .map(|(user_id, user_session_sprints)| {
+            let user_groups_names = users_groups_names.get(user_id);
+            let user_modules_durations = users_modules_durations.get(user_id);
+            let user_completion_date = completion_dates.get(user_id);
+
+            get_user_analytics(
+                user_id,
+                user_groups_names,
+                active_modules,
+                user_session_sprints,
+                user_modules_durations,
+                user_completion_date,
+            )
+        })
+        .collect();
+
+    println!("  ➡️ get_analytics: {} ms", start.elapsed().as_millis());
+    analytics
 }
 
 #[tokio::main]
-async fn calc(
-    db_name: &str,
-    publication_id: &str,
-) -> Result<HashMap<ObjectId, UserGroupsNames>, Box<dyn Error>> {
+async fn calc(db_name: &str, publication_id: &str) -> Result<Vec<UserAnalytics>, Box<dyn Error>> {
     // The array at the beginning of the line indicates what is required before the calculation (u
     // is for user and c for course)
 
@@ -702,7 +829,7 @@ async fn calc(
     let (users_session_sprints, completion_dates, users_modules_durations) = tokio::try_join!(
         get_users_session_sprints(&db, &publication_id, &active_modules_ids, &superadmins),
         get_completion_dates(&db, &publication_id, &active_modules_ids),
-        get_users_modules_durations(&db, &active_modules),
+        get_users_modules_durations(&db, &publication_id, &active_modules, &superadmins),
     )?;
     println!(
         "⏱️ {} ms - users_session_sprints {}, completion_dates {}, users modules durations {}",
@@ -721,7 +848,7 @@ async fn calc(
     );
 
     // sort analytics by email
-    Ok(users_groups_names)
+    analytics
 
     /*
      * BATCH E
@@ -731,7 +858,7 @@ async fn calc(
      */
 }
 
-fn get_results(req: Request) -> Result<HashMap<ObjectId, UserGroupsNames>, Box<dyn Error>> {
+fn get_results(req: Request) -> Result<Vec<UserAnalytics>, Box<dyn Error>> {
     let (db_name, publication_id) = parse_url(&req)?;
     match calc(&db_name, &publication_id) {
         Ok(results) => Ok(results),
