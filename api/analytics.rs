@@ -714,7 +714,7 @@ mod tests {
     fn test_get_results() {
         env::set_var("MONGODB_URI", "mongodb://localhost:27017");
         let req = http::Request::builder()
-            .uri("https://api.example.com/analytics?db=V5&publication=60dc4225f9f392004ebfb7fd")
+            .uri("https://api.example.com/analytics?db=org_afev&publication=60f19ade70889a488b569f1d")
             .body(Body::Empty)
             .unwrap();
 
