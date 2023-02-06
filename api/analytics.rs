@@ -59,6 +59,13 @@ async fn get_superadmin_ids(db: &Database) -> Result<Vec<ObjectId>, Box<dyn Erro
 struct User {
     _id: ObjectId,
     email: String,
+    lms_learner_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct DbUser {
+    _id: ObjectId,
+    email: String,
     lms_learner_id: Option<String>,
 }
 
@@ -66,15 +73,28 @@ async fn get_users(db: &Database) -> Result<HashMap<ObjectId, User>, Box<dyn Err
     let start = Instant::now();
     let collection = db.collection::<Document>("user");
     let cursor = collection
-        .find(doc! {"roles": doc! { "$ne": "superadmin" }}, None)
+        .aggregate(
+            [
+                doc! {"$match": doc! {"roles": doc! { "$ne": "superadmin" }} },
+                doc! {"$project": doc! {"_id": 1, "email": 1, "lms_learner_id": "$lmsLearnerId"}},
+            ],
+            None,
+        )
         .await?;
 
     let documents = cursor.try_collect::<Vec<Document>>().await?;
     let users = documents
         .iter()
         .map(|doc| {
-            let value = bson::from_document::<User>(doc.clone()).unwrap();
-            (value._id, value)
+            let value = bson::from_document::<DbUser>(doc.clone()).unwrap();
+            (
+                value._id,
+                User {
+                    _id: value._id,
+                    email: value.email,
+                    lms_learner_id: value.lms_learner_id.unwrap_or("".to_string()),
+                },
+            )
         })
         .collect();
 
@@ -831,7 +851,7 @@ fn get_user_analytics(
     user_sessions_sprints: &UserSessionSprint,
     user_modules_durations: Option<&Vec<UserModuleDuration>>,
     user_completion_date: Option<&CompletionDate>,
-) -> Result<UserAnalytics, Box<dyn Error>> {
+) -> UserAnalytics {
     let (session_duration, user_modules_durations) = get_users_durations(user_modules_durations);
 
     let mut groups_names = vec![];
@@ -856,13 +876,13 @@ fn get_user_analytics(
     let mut user = User {
         _id: ObjectId::new(),
         email: "N/A".to_string(),
-        lms_learner_id: None,
+        lms_learner_id: "".to_string(),
     };
     if let Some(found) = user_opt {
         user = found.clone();
     }
 
-    Ok(UserAnalytics {
+    UserAnalytics {
         date_started: user_sessions_sprints.date_started.to_string(),
         last_activity: user_sessions_sprints.last_activity.to_string(),
         date_completed,
@@ -873,7 +893,7 @@ fn get_user_analytics(
         active_modules_count: active_modules.len() as u32,
         completion_percentage: user_sessions_sprints.completion_percentage,
         modules,
-    })
+    }
 }
 
 fn get_analytics(
@@ -883,7 +903,7 @@ fn get_analytics(
     completion_dates: &HashMap<ObjectId, CompletionDate>,
     users_modules_durations: &HashMap<ObjectId, Vec<UserModuleDuration>>,
     users: &HashMap<ObjectId, User>,
-) -> Result<Vec<UserAnalytics>, Box<dyn Error>> {
+) -> Vec<UserAnalytics> {
     let start = Instant::now();
 
     let analytics = users_session_sprints
@@ -973,8 +993,13 @@ async fn calc(db_name: &str, publication_id: &str) -> Result<Vec<UserAnalytics>,
         &users,
     );
 
-    println!("⏱️ {} ms - total", start.elapsed().as_millis());
-    analytics
+    println!(
+        "⏱️ {} ms - analytics {}",
+        start.elapsed().as_millis(),
+        analytics.len()
+    );
+
+    Ok(analytics)
 }
 
 fn get_results(req: Request) -> Result<Vec<UserAnalytics>, Box<dyn Error>> {
