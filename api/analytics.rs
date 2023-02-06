@@ -187,6 +187,8 @@ async fn get_completion_dates(
     publication_id: &str,
     active_modules_id: &Vec<ObjectId>,
 ) -> Result<Vec<CompletionDate>, Box<dyn Error>> {
+    let start = Instant::now();
+
     let collection = db.collection::<Document>("course");
     let publication_id = ObjectId::from_str(publication_id)?;
 
@@ -249,6 +251,11 @@ async fn get_completion_dates(
         .iter()
         .map(|doc| bson::from_document::<CompletionDate>(doc.clone()).unwrap())
         .collect();
+
+    println!(
+        "---> get_completion_dates: {:?} ms",
+        start.elapsed().as_millis()
+    );
     Ok(completion_dates)
 }
 
@@ -276,7 +283,9 @@ async fn get_users_session_sprints(
     db: &Database,
     publication_id: &str,
     active_modules_id: &Vec<ObjectId>,
+    superadmins: &Vec<ObjectId>,
 ) -> Result<HashMap<ObjectId, UserSessionSprint>, Box<dyn Error>> {
+    let start = Instant::now();
     let collection = db.collection::<Document>("course_module_sprint");
 
     let cursor = collection
@@ -286,9 +295,8 @@ async fn get_users_session_sprints(
                     "$match": doc! {
                         "_cls": "Training",
                         "context.course": ObjectId::parse_str(publication_id)?,
-                        "user": doc! {
-                            "$exists": true
-                        }
+                        "user": doc! { "$exists": true, },
+                        "user": doc! { "$nin": superadmins }
                     }
                 },
                 doc! {
@@ -324,11 +332,6 @@ async fn get_users_session_sprints(
                     }
                 },
                 doc! {
-                    "$set": doc! {
-                        "activeModulesIds": active_modules_id,
-                    }
-                },
-                doc! {
                     "$group": doc! {
                         "_id": "$_id.user",
                         "course": doc! {
@@ -355,7 +358,7 @@ async fn get_users_session_sprints(
                                             doc! {
                                                 "$in": [
                                                     "$courseModule",
-                                                    "$activeModulesIds"
+                                                    active_modules_id
                                                 ]
                                             }
                                         ]
@@ -371,7 +374,7 @@ async fn get_users_session_sprints(
                                     doc! {
                                         "$in": [
                                             "$courseModule",
-                                            "$activeModulesIds"
+                                            active_modules_id
                                         ]
                                     },
                                     "$courseModule",
@@ -424,6 +427,11 @@ async fn get_users_session_sprints(
             (value.user, value)
         })
         .collect::<HashMap<ObjectId, UserSessionSprint>>();
+
+    println!(
+        "---> get_users_session_sprints: {:?} ms",
+        start.elapsed().as_millis()
+    );
     Ok(users_session_sprints)
 }
 
@@ -438,6 +446,7 @@ async fn get_users_modules_durations(
     db: &Database,
     active_modules: &Vec<ActiveModule>,
 ) -> Result<HashMap<ObjectId, Vec<UserModuleDuration>>, Box<dyn Error>> {
+    let start = Instant::now();
     let mut users_modules_durations: HashMap<ObjectId, Vec<UserModuleDuration>> = HashMap::new();
 
     for active_module in active_modules.iter() {
@@ -610,6 +619,10 @@ async fn get_users_modules_durations(
                 .push(value);
         });
     }
+    println!(
+        "---> get_users_modules_durations: {:?} ms",
+        start.elapsed().as_millis()
+    );
     Ok(users_modules_durations)
 }
 
@@ -645,11 +658,10 @@ async fn calc(db_name: &str, publication_id: &str) -> Result<Vec<Document>, Box<
         .collect::<Vec<ObjectId>>();
 
     let (users_session_sprints, completion_dates, users_modules_durations) = tokio::try_join!(
-        get_users_session_sprints(&db, &publication_id, &active_modules_ids),
+        get_users_session_sprints(&db, &publication_id, &active_modules_ids, &superadmins),
         get_completion_dates(&db, &publication_id, &active_modules_ids),
         get_users_modules_durations(&db, &active_modules),
     )?;
-    // (This should include the completion date at the end of the aggregate).
     println!(
         "⏱️ {} ms - users_session_sprints {}, completion_dates {}, users modules durations {}",
         start.elapsed().as_millis(),
