@@ -446,7 +446,7 @@ async fn get_users_session_sprints(
         )
         .await?;
 
-    let documents = cursor.try_collect::<Vec<Document>>().await.unwrap();
+    let documents = cursor.try_collect::<Vec<Document>>().await?;
     let users_session_sprints = documents
         .iter()
         .map(|doc| {
@@ -464,33 +464,57 @@ async fn get_users_session_sprints(
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct UserModuleDuration {
-    user: ObjectId,
+    module: ObjectId,
     ms_duration: i64,
     formatted_duration: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct UserModulesDurations {
+    user: ObjectId,
+    modules_durations: Vec<UserModuleDuration>,
 }
 
 async fn get_users_modules_durations(
     db: &Database,
     publication_id: &str,
-    active_modules: &Vec<ActiveModule>,
+    // active_modules: &Vec<ActiveModule>,
     superadmins: &Vec<ObjectId>,
 ) -> Result<HashMap<ObjectId, Vec<UserModuleDuration>>, Box<dyn Error>> {
     let start = Instant::now();
     let publication_id = ObjectId::parse_str(publication_id)?;
-    let mut users_modules_durations: HashMap<ObjectId, Vec<UserModuleDuration>> = HashMap::new();
 
-    for active_module in active_modules.iter() {
-        let collection = db.collection::<Document>("granule_sprint");
-        let cursor = collection
+    let collection = db.collection::<Document>("course_module_sprint");
+    let cursor = collection
             .aggregate(
                 [
                     doc! {
                         "$match": doc! {
                             "_cls": "Training",
                             "context.course": publication_id,
-                            "granule": doc! { "$in": active_module.active_granules.clone() },
                             "user": doc! { "$ne": Null },
                             "user": doc! { "$nin": superadmins }
+                        }
+                    },
+                    doc!{
+                        "$lookup": doc! {
+                            "from": "granule_sprint",
+                            "localField": "granuleSprints",
+                            "foreignField": "_id",
+                            "as": "granuleSprints"
+                        }
+                    },
+                    doc! {
+                        "$unwind": "$granuleSprints"
+                    },
+                    doc! {
+                        "$set": {
+                            "granuleSprints.courseModule": "$courseModule"
+                        }
+                    },
+                    doc! {
+                        "$replaceRoot": doc! {
+                            "newRoot": "$granuleSprints"
                         }
                     },
                     doc! {
@@ -554,7 +578,7 @@ async fn get_users_modules_durations(
                     },
                     doc! {
                         "$group": doc! {
-                            "_id": "$user",
+                            "_id": doc! { "user": "$user", "module": "$courseModule" },
                             "msSessionDuration": doc! {
                                 "$sum": "$msSessionDuration"
                             },
@@ -604,8 +628,7 @@ async fn get_users_modules_durations(
                     },
                     doc! {
                         "$project": doc! {
-                            "_id": 0,
-                            "user": "$_id",
+                            "_id": 1,
                             "ms_duration": "$msSessionDuration",
                             "formatted_duration": doc! {
                                 "$concat": [
@@ -637,26 +660,43 @@ async fn get_users_modules_durations(
                         }
                     },
                     doc! {
-                        "$match": doc! {
-                            "user": doc! { "$ne": Null },
+                        "$group": doc! {
+                            "_id": "$_id.user",
+                            "modules_durations": doc! {
+                                "$push": doc! {
+                                    "module": "$_id.module",
+                                    "ms_duration": "$ms_duration",
+                                    "formatted_duration": "$formatted_duration"
+                                }
+                            }
                         }
                     },
+                    doc! {
+                        "$project": doc! {
+                            "_id": 0,
+                            "user": "$_id",
+                            "modules_durations": 1
+                        }
+                    },
+                    doc! {
+                        "$match": doc! {
+                            "user": doc! { "$ne": Null }
+                        }
+                    }
                 ],
                 None,
             )
             .await?;
 
-        let documents = cursor.try_collect::<Vec<Document>>().await?;
+    let documents = cursor.try_collect::<Vec<Document>>().await?;
 
-        documents.iter().for_each(|doc| {
-            let value = bson::from_document::<UserModuleDuration>(doc.clone()).unwrap();
-
-            users_modules_durations
-                .entry(value.user)
-                .or_insert_with(Vec::new)
-                .push(value);
-        });
-    }
+    let users_modules_durations = documents
+        .iter()
+        .map(|doc| {
+            let value = bson::from_document::<UserModulesDurations>(doc.clone()).unwrap();
+            (value.user, value.modules_durations)
+        })
+        .collect::<HashMap<ObjectId, Vec<UserModuleDuration>>>();
     println!(
         "  ➡️ get_users_modules_durations: {} ms",
         start.elapsed().as_millis()
@@ -829,7 +869,7 @@ async fn calc(db_name: &str, publication_id: &str) -> Result<Vec<UserAnalytics>,
     let (users_session_sprints, completion_dates, users_modules_durations) = tokio::try_join!(
         get_users_session_sprints(&db, &publication_id, &active_modules_ids, &superadmins),
         get_completion_dates(&db, &publication_id, &active_modules_ids),
-        get_users_modules_durations(&db, &publication_id, &active_modules, &superadmins),
+        get_users_modules_durations(&db, &publication_id, &superadmins),
     )?;
     println!(
         "⏱️ {} ms - users_session_sprints {}, completion_dates {}, users modules durations {}",
