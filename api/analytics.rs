@@ -478,7 +478,7 @@ struct UserModulesDurations {
 async fn get_users_modules_durations(
     db: &Database,
     publication_id: &str,
-    // active_modules: &Vec<ActiveModule>,
+    active_granules_ids: &Vec<ObjectId>,
     superadmins: &Vec<ObjectId>,
 ) -> Result<HashMap<ObjectId, Vec<UserModuleDuration>>, Box<dyn Error>> {
     let start = Instant::now();
@@ -506,6 +506,11 @@ async fn get_users_modules_durations(
                     },
                     doc! {
                         "$unwind": "$granuleSprints"
+                    },
+                    doc! {
+                        "$match": doc! {
+                            "granuleSprints.granule": doc! { "$in": active_granules_ids }
+                        }
                     },
                     doc! {
                         "$set": {
@@ -866,10 +871,16 @@ async fn calc(db_name: &str, publication_id: &str) -> Result<Vec<UserAnalytics>,
         .map(|m| m.module)
         .collect::<Vec<ObjectId>>();
 
+    let active_granules_ids = active_modules
+        .iter()
+        .map(|m| m.active_granules.clone())
+        .flatten()
+        .collect::<Vec<ObjectId>>();
+
     let (users_session_sprints, completion_dates, users_modules_durations) = tokio::try_join!(
         get_users_session_sprints(&db, &publication_id, &active_modules_ids, &superadmins),
         get_completion_dates(&db, &publication_id, &active_modules_ids),
-        get_users_modules_durations(&db, &publication_id, &superadmins),
+        get_users_modules_durations(&db, &publication_id, &active_granules_ids, &superadmins),
     )?;
     println!(
         "⏱️ {} ms - users_session_sprints {}, completion_dates {}, users modules durations {}",
