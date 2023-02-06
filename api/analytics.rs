@@ -1,10 +1,12 @@
 use bson::{doc, oid::ObjectId, Document};
+use chrono::Utc;
 use futures::stream::TryStreamExt;
 use http::StatusCode;
 use mongodb::{
     options::{ClientOptions, ResolverConfig},
     Client, Database,
 };
+use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::{collections::HashMap, str::FromStr};
 use std::{env, time::Instant};
@@ -35,6 +37,19 @@ async fn gt_db(db_name: &str) -> Result<Database, Box<dyn Error>> {
     let client = get_client().await?;
     let db = client.database(db_name);
     Ok(db)
+}
+
+async fn get_superadmin_ids(db: &Database) -> Result<Vec<ObjectId>, Box<dyn Error>> {
+    let collection = db.collection::<Document>("user");
+    let superadmins = collection
+        .distinct("_id", doc! {"roles": "superadmin"}, None)
+        .await?;
+
+    let superadmins = superadmins
+        .iter()
+        .map(|doc| doc.as_object_id().unwrap().clone())
+        .collect();
+    Ok(superadmins)
 }
 
 async fn get_users_groups_names(
@@ -133,6 +148,177 @@ async fn get_active_modules(
     Ok(active_modules)
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct GranuleSprint {
+    course_module_id: ObjectId,
+    sprint_ids: Vec<ObjectId>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct UserSessionSprint {
+    user: ObjectId,
+    completed_modules_count: u32,
+    completion_percentage: f32,
+    completed_modules_ids: Vec<ObjectId>,
+    started_modules_ids: Vec<ObjectId>,
+    #[serde(with = "bson::serde_helpers::chrono_datetime_as_bson_datetime")]
+    date_started: chrono::DateTime<Utc>,
+    #[serde(with = "bson::serde_helpers::chrono_datetime_as_bson_datetime")]
+    last_activity: chrono::DateTime<Utc>,
+    granule_sprints: Vec<GranuleSprint>,
+}
+
+async fn get_users_session_sprints(
+    db: &Database,
+    publication_id: &str,
+    active_modules: &Vec<ObjectId>,
+) -> Result<Vec<UserSessionSprint>, Box<dyn Error>> {
+    let collection = db.collection::<Document>("course_module_sprint");
+
+    let cursor = collection
+        .aggregate(
+            [
+                doc! {
+                    "$match": doc! {
+                        "_cls": "Training",
+                        "context.course": ObjectId::parse_str(publication_id)?,
+                        "user": doc! {
+                            "$exists": true
+                        }
+                    }
+                },
+                doc! {
+                    "$unwind": "$user"
+                },
+                doc! {
+                    "$unwind": "$granuleSprints"
+                },
+                doc! {
+                    "$group": doc! {
+                        "_id": doc! {
+                            "user": "$user",
+                            "courseModule": "$courseModule"
+                        },
+                        "course": doc! {
+                            "$first": "$context.course"
+                        },
+                        "dateStarted": doc! {
+                            "$min": "$date_created"
+                        },
+                        "lastActivity": doc! {
+                            "$max": "$date_updated"
+                        },
+                        "granuleSprints": doc! {
+                            "$addToSet": "$granuleSprints"
+                        },
+                        "isClear": doc! {
+                            "$max": "$isClear"
+                        },
+                        "courseModule": doc! {
+                            "$first": "$courseModule"
+                        }
+                    }
+                },
+                doc! {
+                    "$set": doc! {
+                        "activeModulesIds": active_modules,
+                    }
+                },
+                doc! {
+                    "$group": doc! {
+                        "_id": "$_id.user",
+                        "course": doc! {
+                            "$first": "$course"
+                        },
+                        "dateStarted": doc! {
+                            "$min": "$dateStarted"
+                        },
+                        "lastActivity": doc! {
+                            "$max": "$lastActivity"
+                        },
+                        "granuleSprints": doc! {
+                            "$push": doc! {
+                                "course_module_id": "$_id.courseModule",
+                                "sprint_ids": "$granuleSprints"
+                            }
+                        },
+                        "completedModulesIds": doc! {
+                            "$addToSet": doc! {
+                                "$cond": [
+                                    doc! {
+                                        "$and": [
+                                            "$isClear",
+                                            doc! {
+                                                "$in": [
+                                                    "$courseModule",
+                                                    "$activeModulesIds"
+                                                ]
+                                            }
+                                        ]
+                                    },
+                                    "$courseModule",
+                                    "$$REMOVE"
+                                ]
+                            }
+                        },
+                        "startedModulesIds": doc! {
+                            "$addToSet": doc! {
+                                "$cond": [
+                                    doc! {
+                                        "$in": [
+                                            "$courseModule",
+                                            "$activeModulesIds"
+                                        ]
+                                    },
+                                    "$courseModule",
+                                    "$$REMOVE"
+                                ]
+                            }
+                        }
+                    }
+                },
+                doc! {
+                    "$project": doc! {
+                        "_id": 0,
+                        "user": "$_id",
+                        "date_started" : "$dateStarted",
+                        "last_activity": "$lastActivity",
+                        "granule_sprints": "$granuleSprints",
+                        "completed_modules_count": doc! {
+                            "$size": "$completedModulesIds"
+                        },
+                        "completion_percentage": doc! {
+                            "$round": doc! {
+                                "$multiply": [
+                                    doc! {
+                                        "$divide": [
+                                            doc! {
+                                                "$size": "$completedModulesIds"
+                                            },
+                                            active_modules.len() as u32
+                                        ]
+                                    },
+                                    100
+                                ]
+                            }
+                        },
+                        "completed_modules_ids": "$completedModulesIds",
+                        "started_modules_ids": "$startedModulesIds"
+                    }
+                },
+            ],
+            None,
+        )
+        .await?;
+
+    let users_session_sprints = cursor.try_collect::<Vec<Document>>().await?;
+    let users_session_sprints = users_session_sprints
+        .iter()
+        .map(|doc| bson::from_document::<UserSessionSprint>(doc.clone()).unwrap())
+        .collect();
+    Ok(users_session_sprints)
+}
+
 #[tokio::main]
 async fn calc(db_name: &str, publication_id: &str) -> Result<Vec<Document>, Box<dyn Error>> {
     // The array at the beginning of the line indicates what is required before the calculation (u
@@ -141,22 +327,38 @@ async fn calc(db_name: &str, publication_id: &str) -> Result<Vec<Document>, Box<
     let start = Instant::now();
 
     let db = gt_db(db_name).await?;
-    println!("Connection to MongoDB: {} ms", start.elapsed().as_millis());
+    println!(
+        "⏱️ {} ms - connection to MongoDB",
+        start.elapsed().as_millis()
+    );
 
     // BATCH A
     // 1. [u?] GET the usersGroupsNames PER USER  ---> 'learners_group' collection
     // 2. [c] GET the activeModules for the publication ---> 'course' collection
-    let (users_groups_names, active_modules) = tokio::try_join!(
+    let (users_groups_names, active_modules, superadmins) = tokio::try_join!(
         get_users_groups_names(&db, publication_id), // TODO: add possiblity to filter for one user
         get_active_modules(&db, publication_id),
+        get_superadmin_ids(&db),
     )?;
     println!(
-        "Get users_groups_names and active_modules: {} ms",
+        "⏱️ {} ms - users_groups_names, superadmins and active_modules",
+        start.elapsed().as_millis()
+    );
+    // println!("users_groups_names: {:#?}", users_groups_names);
+    println!("active_modules: {:#?}", active_modules.len());
+    println!("superadmins: {:#?}", superadmins.len());
+
+    // BATCH B
+    // 4. [2, u?] -> GET the usersSessionSprints for the course PER USER ---> 'course_module_sprint' collection
+    // (This should include the completion date at the end of the aggregate).
+    let users_session_sprints =
+        get_users_session_sprints(&db, &publication_id, &active_modules).await?;
+    println!(
+        "⏱️ {} ms - users_session_sprints",
         start.elapsed().as_millis()
     );
 
-    println!("active_modules: {:#?}", active_modules);
-
+    println!("users_session_sprints: {:#?}", users_session_sprints.len());
     Ok(users_groups_names)
 
     /*
@@ -226,8 +428,12 @@ mod tests {
             .uri("https://api.example.com/analytics?db=V5&publication=60dc4225f9f392004ebfb7fd")
             .body(Body::Empty)
             .unwrap();
-        let result = get_results(req).unwrap();
-        println!("{:?}", result.len());
+
+        let result_option = get_results(req);
+        assert!(result_option.is_ok());
+
+        let result = result_option.unwrap();
+        println!("result: {:#?}", result.len());
         assert!(true)
     }
 }
