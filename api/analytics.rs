@@ -733,6 +733,42 @@ fn get_users_durations(
     result
 }
 
+fn get_user_modules_analytics(
+    active_modules: &Vec<ActiveModule>,
+    completed_modules_ids: &Vec<ObjectId>,
+    started_modules_ids: &Vec<ObjectId>,
+    user_modules_durations: &Vec<UserModuleDuration>,
+) -> Vec<UserModuleProgress> {
+    active_modules
+        .iter()
+        .map(|active_module| {
+            let module_id = active_module.module.clone();
+            let mut progress = ModuleProgress::NotStarted;
+            let is_completed = completed_modules_ids.contains(&module_id);
+            if is_completed {
+                progress = ModuleProgress::Completed;
+            } else {
+                let is_started = started_modules_ids.contains(&module_id);
+                if is_started {
+                    progress = ModuleProgress::Started;
+                }
+            }
+
+            let duration = user_modules_durations
+                .iter()
+                .find(|user_module_duration| user_module_duration.module == module_id)
+                .map(|user_module_duration| user_module_duration.formatted_duration.clone())
+                .unwrap_or("N/A".to_string());
+
+            UserModuleProgress {
+                module: module_id,
+                progress,
+                duration,
+            }
+        })
+        .collect()
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 enum ModuleProgress {
     NotStarted,
@@ -742,7 +778,7 @@ enum ModuleProgress {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct UserModuleProgress {
-    user: ObjectId,
+    module: ObjectId,
     progress: ModuleProgress,
     duration: String,
 }
@@ -755,10 +791,10 @@ struct UserAnalytics {
     date_completed: String,
     session_duration: String,
     groups_names: String,
-    // completed_modules_count: i32,
-    // active_modules_count: i32,
-    // completion_percentage: f32,
-    // modules: Vec<UserModuleProgress>,
+    completed_modules_count: u32,
+    active_modules_count: u32,
+    completion_percentage: f32,
+    modules: Vec<UserModuleProgress>,
 }
 
 fn get_user_analytics(
@@ -783,16 +819,12 @@ fn get_user_analytics(
         date_completed = user_completion_date.date.to_string();
     }
 
-    // const { completedModulesIds, user, startedModulesIds } =
-    //   userTrainingSessionSprint
-    // const userId = user._id.toString()
-    //
-    // const modules = this.getUserModulesAnalytics({
-    //   activeModulesIds,
-    //   completedModulesIds,
-    //   startedModulesIds,
-    //   userModulesDurations,
-    // })
+    let modules = get_user_modules_analytics(
+        &active_modules,
+        &user_sessions_sprints.completed_modules_ids,
+        &user_sessions_sprints.started_modules_ids,
+        &user_modules_durations,
+    );
 
     Ok(UserAnalytics {
         _id: *user_id,
@@ -802,10 +834,10 @@ fn get_user_analytics(
         session_duration,
         groups_names,
         // user: String,
-        // completed_modules_count: i32,
-        // active_modules_count: i32,
-        // completion_percentage: f32,
-        // modules: Vec<UserModuleProgress>,
+        completed_modules_count: user_sessions_sprints.completed_modules_count,
+        active_modules_count: active_modules.len() as u32,
+        completion_percentage: user_sessions_sprints.completion_percentage,
+        modules,
     })
 }
 
