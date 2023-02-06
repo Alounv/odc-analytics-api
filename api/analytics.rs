@@ -921,6 +921,7 @@ async fn calc(db_name: &str, publication_id: &str) -> Result<Vec<UserAnalytics>,
         "⏱️ {} ms - connection to MongoDB",
         start.elapsed().as_millis()
     );
+    println!();
 
     let (users_groups_names, active_modules, superadmins, users) = tokio::try_join!(
         get_users_groups_names(&db, publication_id), // TODO: add possiblity to filter for one user
@@ -936,6 +937,7 @@ async fn calc(db_name: &str, publication_id: &str) -> Result<Vec<UserAnalytics>,
         active_modules.len(),
         users.len()
     );
+    println!();
 
     let active_modules_ids = active_modules
         .iter()
@@ -960,6 +962,7 @@ async fn calc(db_name: &str, publication_id: &str) -> Result<Vec<UserAnalytics>,
         completion_dates.len(),
         users_modules_durations.len()
     );
+    println!();
 
     let analytics = get_analytics(
         &users_groups_names,
@@ -970,15 +973,8 @@ async fn calc(db_name: &str, publication_id: &str) -> Result<Vec<UserAnalytics>,
         &users,
     );
 
-    // sort analytics by email
+    println!("⏱️ {} ms - total", start.elapsed().as_millis());
     analytics
-
-    /*
-     * BATCH E
-     * 8. [2,4,5] -> loop through each usersSessionsSprints
-     *    8.1. Format course data
-     *    8.2. Format module specific data
-     */
 }
 
 fn get_results(req: Request) -> Result<Vec<UserAnalytics>, Box<dyn Error>> {
