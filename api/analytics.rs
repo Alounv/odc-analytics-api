@@ -42,22 +42,6 @@ async fn gt_db(db_name: &str) -> Result<Database, Box<dyn Error>> {
     Ok(db)
 }
 
-async fn get_superadmin_ids(db: &Database) -> Result<Vec<ObjectId>, Box<dyn Error>> {
-    let start = Instant::now();
-    let collection = db.collection::<Document>("user");
-    let documents = collection
-        .distinct("_id", doc! {"roles": "superadmin"}, None)
-        .await?;
-
-    let superadmins = documents
-        .iter()
-        .map(|doc| doc.as_object_id().unwrap().clone())
-        .collect();
-
-    println!("  ➡️ get_superadmin_ids: {} ms", start.elapsed().as_millis());
-    Ok(superadmins)
-}
-
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct User {
     _id: ObjectId,
@@ -351,7 +335,6 @@ async fn get_users_session_sprints(
     db: &Database,
     publication_id: &str,
     active_modules_id: &Vec<ObjectId>,
-    superadmins: &Vec<ObjectId>,
 ) -> Result<HashMap<ObjectId, UserSessionSprint>, Box<dyn Error>> {
     let start = Instant::now();
     let collection = db.collection::<Document>("course_module_sprint");
@@ -366,7 +349,6 @@ async fn get_users_session_sprints(
                         "context.course": publication_id,
                         "courseModule": doc! { "$in":  active_modules_id, },
                         "user": doc! { "$ne": Null, },
-                        "user": doc! { "$nin": superadmins }
                     }
                 },
                 doc! {
@@ -489,7 +471,6 @@ async fn get_users_modules_durations(
     db: &Database,
     publication_id: &str,
     active_granules_ids: &Vec<ObjectId>,
-    superadmins: &Vec<ObjectId>,
 ) -> Result<HashMap<ObjectId, Vec<UserModuleDuration>>, Box<dyn Error>> {
     let start = Instant::now();
     let publication_id = ObjectId::parse_str(publication_id)?;
@@ -503,7 +484,6 @@ async fn get_users_modules_durations(
                             "_cls": "Training",
                             "context.course": publication_id,
                             "user": doc! { "$ne": Null },
-                            "user": doc! { "$nin": superadmins }
                         }
                     },
                     doc!{
@@ -906,17 +886,15 @@ async fn calc(db_name: &str, publication_id: &str) -> Result<Vec<UserAnalytics>,
     );
     println!();
 
-    let (users_groups_names, active_modules, superadmins, users) = tokio::try_join!(
+    let (users_groups_names, active_modules, users) = tokio::try_join!(
         get_users_groups_names(&db, publication_id), // TODO: add possiblity to filter for one user
         get_active_modules(&db, publication_id),
-        get_superadmin_ids(&db),
         get_users(&db),
     )?;
     println!(
-        "⏱️ {} ms - users_groups_names {}, superadmins {}, active_modules {} and users {}",
+        "⏱️ {} ms - users_groups_names {}, active_modules {} and users {}",
         start.elapsed().as_millis(),
         users_groups_names.len(),
-        superadmins.len(),
         active_modules.len(),
         users.len()
     );
@@ -934,9 +912,9 @@ async fn calc(db_name: &str, publication_id: &str) -> Result<Vec<UserAnalytics>,
         .collect::<Vec<ObjectId>>();
 
     let (users_session_sprints, completion_dates, users_modules_durations) = tokio::try_join!(
-        get_users_session_sprints(&db, &publication_id, &active_modules_ids, &superadmins),
+        get_users_session_sprints(&db, &publication_id, &active_modules_ids),
         get_completion_dates(&db, &publication_id, &active_modules_ids),
-        get_users_modules_durations(&db, &publication_id, &active_granules_ids, &superadmins),
+        get_users_modules_durations(&db, &publication_id, &active_granules_ids),
     )?;
     println!(
         "⏱️ {} ms - users_session_sprints {}, completion_dates {}, users modules durations {}",
