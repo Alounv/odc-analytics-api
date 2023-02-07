@@ -13,6 +13,7 @@ use std::error::Error;
 use std::io::prelude::*;
 use std::{collections::HashMap, str::FromStr};
 use std::{env, time::Instant};
+use tokio::task;
 use url::Url;
 use vercel_lambda::{error::VercelError, lambda, Body, IntoResponse, Request};
 
@@ -470,19 +471,27 @@ struct UserModulesDurations {
 async fn get_users_modules_durations(
     db: &Database,
     publication_id: &str,
-    active_granules_ids: &Vec<ObjectId>,
+    active_modules: &Vec<ActiveModule>,
 ) -> Result<HashMap<ObjectId, Vec<UserModuleDuration>>, Box<dyn Error>> {
     let start = Instant::now();
     let publication_id = ObjectId::parse_str(publication_id)?;
+    let mut users_modules_durations = Vec::new();
 
-    let collection = db.collection::<Document>("course_module_sprint");
-    let cursor = collection
+    for module in active_modules {
+        let db_ref = db.clone();
+        let module_id = module.module.clone();
+        let module_active_granules = module.active_granules.clone();
+        let collection = db_ref.collection::<Document>("course_module_sprint");
+
+        let users_module_durations = task::spawn(async move {
+            let cursor = collection
             .aggregate(
                 [
                     doc! {
                         "$match": doc! {
                             "_cls": "Training",
                             "context.course": publication_id,
+                            "courseModule": module_id,
                             "user": doc! { "$ne": Null },
                         }
                     },
@@ -499,7 +508,7 @@ async fn get_users_modules_durations(
                     },
                     doc! {
                         "$match": doc! {
-                            "granuleSprints.granule": doc! { "$in": active_granules_ids }
+                            "granuleSprints.granule": doc! { "$in": module_active_granules }
                         }
                     },
                     doc! {
@@ -681,16 +690,25 @@ async fn get_users_modules_durations(
                 ],
                 None,
             )
-            .await?;
+            .await.unwrap();
 
-    let documents = cursor.try_collect::<Vec<Document>>().await?;
+            let documents = cursor.try_collect::<Vec<Document>>().await.unwrap();
+            let users_module_durations = documents
+                .iter()
+                .map(|doc| {
+                    let value = bson::from_document::<UserModulesDurations>(doc.clone()).unwrap();
+                    value
+                })
+                .collect::<Vec<UserModulesDurations>>();
+                return users_module_durations;
+        }).await?;
 
-    let users_modules_durations = documents
+        users_modules_durations.extend(users_module_durations);
+    }
+
+    let users_modules_durations = users_modules_durations
         .iter()
-        .map(|doc| {
-            let value = bson::from_document::<UserModulesDurations>(doc.clone()).unwrap();
-            (value.user, value.modules_durations)
-        })
+        .map(|value| (value.user, value.modules_durations.clone()))
         .collect::<HashMap<ObjectId, Vec<UserModuleDuration>>>();
     println!(
         "  ➡️ get_users_modules_durations: {} ms",
@@ -905,16 +923,10 @@ async fn calc(db_name: &str, publication_id: &str) -> Result<Vec<UserAnalytics>,
         .map(|m| m.module)
         .collect::<Vec<ObjectId>>();
 
-    let active_granules_ids = active_modules
-        .iter()
-        .map(|m| m.active_granules.clone())
-        .flatten()
-        .collect::<Vec<ObjectId>>();
-
     let (users_session_sprints, completion_dates, users_modules_durations) = tokio::try_join!(
         get_users_session_sprints(&db, &publication_id, &active_modules_ids),
         get_completion_dates(&db, &publication_id, &active_modules_ids),
-        get_users_modules_durations(&db, &publication_id, &active_granules_ids),
+        get_users_modules_durations(&db, &publication_id, &active_modules),
     )?;
     println!(
         "⏱️ {} ms - users_session_sprints {}, completion_dates {}, users modules durations {}",
