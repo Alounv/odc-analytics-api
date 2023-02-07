@@ -335,12 +335,6 @@ async fn get_completion_dates(
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct ModuleGranulesSprints {
-    course_module_id: ObjectId,
-    sprint_ids: Vec<ObjectId>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
 struct UserSessionSprint {
     user: ObjectId,
     completed_modules_count: u32,
@@ -351,7 +345,6 @@ struct UserSessionSprint {
     date_started: DateTime<Utc>,
     #[serde(with = "bson::serde_helpers::chrono_datetime_as_bson_datetime")]
     last_activity: DateTime<Utc>,
-    granule_sprints: Vec<ModuleGranulesSprints>,
 }
 
 async fn get_users_session_sprints(
@@ -377,9 +370,6 @@ async fn get_users_session_sprints(
                     }
                 },
                 doc! {
-                    "$unwind": "$granuleSprints"
-                },
-                doc! {
                     "$group": doc! {
                         "_id": doc! {
                             "user": "$user",
@@ -393,9 +383,6 @@ async fn get_users_session_sprints(
                         },
                         "lastActivity": doc! {
                             "$max": "$date_updated"
-                        },
-                        "granuleSprints": doc! {
-                            "$addToSet": "$granuleSprints"
                         },
                         "isClear": doc! {
                             "$max": "$isClear"
@@ -417,12 +404,6 @@ async fn get_users_session_sprints(
                         "lastActivity": doc! {
                             "$max": "$lastActivity"
                         },
-                        "granuleSprints": doc! {
-                            "$push": doc! {
-                                "course_module_id": "$_id.courseModule",
-                                "sprint_ids": "$granuleSprints"
-                            }
-                        },
                         "completedModulesIds": doc! {
                             "$addToSet": doc! {
                                 "$cond": [
@@ -443,7 +424,6 @@ async fn get_users_session_sprints(
                         "user": "$_id",
                         "date_started" : "$dateStarted",
                         "last_activity": "$lastActivity",
-                        "granule_sprints": "$granuleSprints",
                         "completed_modules_count": doc! {
                             "$size": "$completedModulesIds"
                         },
