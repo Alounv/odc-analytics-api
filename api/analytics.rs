@@ -371,6 +371,7 @@ async fn get_users_session_sprints(
                     "$match": doc! {
                         "_cls": "Training",
                         "context.course": publication_id,
+                        "courseModule": doc! { "$in":  active_modules_id, },
                         "user": doc! { "$ne": Null, },
                         "user": doc! { "$nin": superadmins }
                     }
@@ -425,35 +426,14 @@ async fn get_users_session_sprints(
                         "completedModulesIds": doc! {
                             "$addToSet": doc! {
                                 "$cond": [
-                                    doc! {
-                                        "$and": [
-                                            "$isClear",
-                                            doc! {
-                                                "$in": [
-                                                    "$courseModule",
-                                                    active_modules_id
-                                                ]
-                                            }
-                                        ]
-                                    },
+                                    "$isClear",
                                     "$courseModule",
                                     "$$REMOVE"
                                 ]
                             }
                         },
                         "startedModulesIds": doc! {
-                            "$addToSet": doc! {
-                                "$cond": [
-                                    doc! {
-                                        "$in": [
-                                            "$courseModule",
-                                            active_modules_id
-                                        ]
-                                    },
-                                    "$courseModule",
-                                    "$$REMOVE"
-                                ]
-                            }
+                            "$addToSet": "$courseModule",
                         }
                     }
                 },
