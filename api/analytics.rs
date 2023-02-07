@@ -1,17 +1,20 @@
 use bson::{doc, oid::ObjectId, Bson::Null, Document};
 use chrono::{DateTime, Utc};
+use flate2::write::GzEncoder;
+use flate2::Compression;
 use futures::stream::TryStreamExt;
-use http::StatusCode;
+use http::{Response, StatusCode};
 use mongodb::{
     options::{ClientOptions, ResolverConfig},
     Client, Database,
 };
 use serde::{Deserialize, Serialize};
 use std::error::Error;
+use std::io::prelude::*;
 use std::{collections::HashMap, str::FromStr};
 use std::{env, time::Instant};
 use url::Url;
-use vercel_lambda::{error::VercelError, lambda, IntoResponse, Request, Response};
+use vercel_lambda::{error::VercelError, lambda, Body, IntoResponse, Request};
 
 fn parse_url(req: &Request) -> Result<(String, String), Box<dyn Error>> {
     let parsed_url = Url::parse(&req.uri().to_string())?;
@@ -1016,21 +1019,19 @@ fn handler(req: Request) -> Result<impl IntoResponse, VercelError> {
     match result {
         Ok(list) => {
             let data = serde_json::to_string(&list).unwrap();
+            let mut compressed_data = GzEncoder::new(Vec::new(), Compression::default());
+            compressed_data.write_all(data.as_bytes()).unwrap();
+
             let response = Response::builder()
                 .status(StatusCode::OK)
-                .header("Content-Type", "text/plain")
-                .body(data)
+                .header("Content-Type", "application/json")
+                .header("Content-Encoding", "gzip")
+                .body(Body::from(compressed_data.finish().unwrap()))
                 .expect("Internal Server Error");
 
             Ok(response)
         }
-        Err(e) => {
-            let error = format!("Error: {}", e);
-            Ok(Response::builder()
-                .status(StatusCode::BAD_REQUEST)
-                .body(error)
-                .unwrap())
-        }
+        Err(e) => Err(VercelError::new(&e.to_string())),
     }
 }
 
@@ -1056,7 +1057,8 @@ mod tests {
         assert!(result_option.is_ok());
 
         let result = result_option.unwrap();
-        println!("result: {:#?}", result.len());
+        let data = serde_json::to_string(&result).unwrap();
+        println!("data: {}", data.len());
         assert!(true)
     }
 }
