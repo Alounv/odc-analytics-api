@@ -13,7 +13,7 @@ use std::error::Error;
 use std::io::prelude::*;
 use std::{collections::HashMap, str::FromStr};
 use std::{env, time::Instant};
-use tokio::task;
+use tokio::spawn;
 use url::Url;
 use vercel_lambda::{error::VercelError, lambda, Body, IntoResponse, Request};
 
@@ -476,16 +476,14 @@ async fn get_users_modules_durations(
     active_modules: &Vec<ActiveModule>,
 ) -> Result<HashMap<ObjectId, Vec<UserModuleDuration>>, Box<dyn Error>> {
     let start = Instant::now();
-    let mut flat_users_modules_durations = Vec::new();
+    let mut tasks = vec![];
 
     for module in active_modules {
-        let modTimer = Instant::now();
         let db = db.clone();
         let module_id = module.module.clone();
         let module_active_granules = module.active_granules.clone();
         let collection = db.collection::<Document>("granule_sprint");
-
-        let users_module_durations = task::spawn(async move {
+        let task = spawn(async move {
             let cursor = collection
             .aggregate(
                 [
@@ -649,8 +647,6 @@ async fn get_users_modules_durations(
 
             let documents = cursor.try_collect::<Vec<Document>>().await.unwrap();
 
-            println!("module: {} ms", modTimer.elapsed().as_millis());
-
             let users_module_durations = documents
                 .iter()
                 .map(|doc| {
@@ -665,9 +661,15 @@ async fn get_users_modules_durations(
                 })
                 .collect::<Vec<SpecificModuleUserDuration>>();
             users_module_durations
-        }).await?;
+        });
 
-        flat_users_modules_durations.extend(users_module_durations);
+        tasks.push(task);
+    }
+
+    let mut flat_users_modules_durations = Vec::new();
+    for task in tasks {
+        let result = task.await?;
+        flat_users_modules_durations.extend(result);
     }
 
     let mut users_modules_durations = HashMap::new();
@@ -903,6 +905,7 @@ async fn calc(db_name: &str, publication_id: &str) -> Result<Vec<UserAnalytics>,
         get_completion_dates(&db, &active_modules_ids),
         get_users_modules_durations(&db, &active_modules),
     )?;
+
     println!(
         "⏱️ {} ms - users_session_sprints {}, completion_dates {}, users modules durations {}",
         b.elapsed().as_millis(),
