@@ -479,6 +479,7 @@ async fn get_users_modules_durations(
     let mut flat_users_modules_durations = Vec::new();
 
     for module in active_modules {
+        let modTimer = Instant::now();
         let db = db.clone();
         let module_id = module.module.clone();
         let module_active_granules = module.active_granules.clone();
@@ -648,7 +649,7 @@ async fn get_users_modules_durations(
 
             let documents = cursor.try_collect::<Vec<Document>>().await.unwrap();
 
-            println!("doc: {} ms", start.elapsed().as_millis());
+            println!("module: {} ms", modTimer.elapsed().as_millis());
 
             let users_module_durations = documents
                 .iter()
