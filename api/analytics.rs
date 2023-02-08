@@ -479,10 +479,10 @@ async fn get_users_modules_durations(
     let mut flat_users_modules_durations = Vec::new();
 
     for module in active_modules {
-        let db_ref = db.clone();
+        let db = db.clone();
         let module_id = module.module.clone();
         let module_active_granules = module.active_granules.clone();
-        let collection = db_ref.collection::<Document>("course_module_sprint");
+        let collection = db.collection::<Document>("granule_sprint");
 
         let users_module_durations = task::spawn(async move {
             let cursor = collection
@@ -638,7 +638,7 @@ async fn get_users_modules_durations(
                             "_id": 0,
                             "user": "$_id",
                             "ms_duration": 1,
-                            "modules_durations": 1
+                            "formatted_duration": 1
                         }
                     },
                 ],
@@ -647,6 +647,9 @@ async fn get_users_modules_durations(
             .await.unwrap();
 
             let documents = cursor.try_collect::<Vec<Document>>().await.unwrap();
+
+            println!("doc: {} ms", start.elapsed().as_millis());
+
             let users_module_durations = documents
                 .iter()
                 .map(|doc| {
@@ -840,8 +843,6 @@ fn get_analytics(
     users_modules_durations: &HashMap<ObjectId, Vec<UserModuleDuration>>,
     users: &HashMap<ObjectId, User>,
 ) -> Vec<UserAnalytics> {
-    let start = Instant::now();
-
     let analytics = users_session_sprints
         .iter()
         .map(|(user_id, user_session_sprints)| {
@@ -861,24 +862,21 @@ fn get_analytics(
         })
         .collect();
 
-    println!("  ➡️ get_analytics: {} ms", start.elapsed().as_millis());
     analytics
 }
 
 #[tokio::main]
 async fn calc(db_name: &str, publication_id: &str) -> Result<Vec<UserAnalytics>, Box<dyn Error>> {
-    // The array at the beginning of the line indicates what is required before the calculation (u
-    // is for user and c for course)
-
-    let start = Instant::now();
+    let total = Instant::now();
 
     let db = gt_db(db_name).await?;
     println!(
         "⏱️ {} ms - connection to MongoDB",
-        start.elapsed().as_millis()
+        total.elapsed().as_millis()
     );
     println!();
 
+    let a = Instant::now();
     let (users_groups_names, active_modules, users) = tokio::try_join!(
         get_users_groups_names(&db, publication_id), // TODO: add possiblity to filter for one user
         get_active_modules(&db, publication_id),
@@ -886,13 +884,14 @@ async fn calc(db_name: &str, publication_id: &str) -> Result<Vec<UserAnalytics>,
     )?;
     println!(
         "⏱️ {} ms - users_groups_names {}, active_modules {} and users {}",
-        start.elapsed().as_millis(),
+        a.elapsed().as_millis(),
         users_groups_names.len(),
         active_modules.len(),
         users.len()
     );
     println!();
 
+    let b = Instant::now();
     let active_modules_ids = active_modules
         .iter()
         .map(|m| m.module)
@@ -905,13 +904,14 @@ async fn calc(db_name: &str, publication_id: &str) -> Result<Vec<UserAnalytics>,
     )?;
     println!(
         "⏱️ {} ms - users_session_sprints {}, completion_dates {}, users modules durations {}",
-        start.elapsed().as_millis(),
+        b.elapsed().as_millis(),
         users_session_sprints.len(),
         completion_dates.len(),
         users_modules_durations.len()
     );
     println!();
 
+    let c = Instant::now();
     let analytics = get_analytics(
         &users_groups_names,
         &active_modules,
@@ -923,10 +923,13 @@ async fn calc(db_name: &str, publication_id: &str) -> Result<Vec<UserAnalytics>,
 
     println!(
         "⏱️ {} ms - analytics {}",
-        start.elapsed().as_millis(),
+        c.elapsed().as_millis(),
         analytics.len()
     );
+    println!();
 
+    println!("===== TOTAL ⏱️ {} ms ======", total.elapsed().as_millis(),);
+    println!();
     Ok(analytics)
 }
 
@@ -983,7 +986,6 @@ mod tests {
 
         let result = result_option.unwrap();
         let data = serde_json::to_string(&result).unwrap();
-        println!("data: {}", data.len());
-        assert!(true)
+        assert!(data.len() > 0);
     }
 }
