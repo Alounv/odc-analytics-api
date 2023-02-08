@@ -958,6 +958,7 @@ fn handler(req: Request) -> Result<impl IntoResponse, VercelError> {
                 .status(StatusCode::OK)
                 .header("Content-Type", "application/json")
                 .header("Content-Encoding", "gzip")
+                .header("Cache-Control", "s-maxage=1, stale-while-revalidate")
                 .body(Body::from(compressed_data.finish().unwrap()))
                 .expect("Internal Server Error");
 
